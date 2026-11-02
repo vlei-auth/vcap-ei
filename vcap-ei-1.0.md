@@ -377,6 +377,7 @@ Returns request options for a wrapped GetState (op 2) or Recover (op 4) with a f
 - **Request:** scope + `5: op` (2 or 4), `6: originalDigest_b32` (optional for op 2, required for op 4).
 - **Result:** `PublicKeyCredentialRequestOptions` fields as in §8.3, with VCAPREQ carrying the op, the slot handle and, when given, key 6.
 - For a slot in doubt, the service SHOULD request op 2 with the `originalDigest` of the in-doubt Ticket. The result carries the StateProof and, if the signature was made, the Signed record, so one browser call resolves the outcome (VCAP §7.14.5). The service then archives the Signed record, or, if nothing was signed, keeps the Ticket valid for a new `webauthn-sign-options` request started by the user.
+- The page submits the result of a call made with these options to `webauthn-sign-result` (§8.4). The service recognizes it by the single-use challenge it issued here, which records the op and, when given, the `originalDigest`; it verifies `deviceSig` and the StateProof with the enrolled attestation key and processes the result per VCAP §12.9.3, never as a new signature.
 
 ---
 
