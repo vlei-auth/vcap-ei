@@ -250,6 +250,7 @@ Requests a Ticket for ICP, IXN or ROT.
 - A StateProof in key 5 makes it the state basis; its challenge MUST be one issued by `challenge` (§7.2) for this principal and scope, and the service verifies it with the enrolled attestation public key. A null key 5 selects the enterprise's archived head and counter as the state basis (VCAP §12.8 item 1).
 - An enterprise service MAY require a StateProof for every Ticket, and MAY require one for some requests only (for example the first Ticket of a session, or after any `409`). A service that requires one and receives a null key 5 MUST return `409` with error code 7 (§5.2). A platform MUST then obtain a challenge (§7.2), call GetState and repeat the request with key 5 present.
 - A service that accepts null keys MUST use only its own archived head and counter as the state basis, never values supplied by the platform.
+- A service that implements §8 SHOULD accept a null key 5 for a slot whose archived state is current and not in doubt. On the WebAuthn route each StateProof costs the employee a separate browser call with its own PIN entry and UP, while `webauthn-create-result` and every `webauthn-sign-result` already keep the archived state current (VCAP §12.9).
 - The service MUST perform VCAP §12.8 and VAF §8.2 in full before signing, including SAID recomputation, prior-event and key checks, witness policy and, for ROT, `signerKeyRef = KeyRef(old.next)`.
 - **Idempotency:** a repeated request with identical bytes returns the same Ticket. A different original for a (scope, sequence) that already has a Ticket returns `409` with error code 9.
 
@@ -361,6 +362,7 @@ These operations support VCAP §12.9. The page is served from an RP ID in `webau
 - **Request:** scope + `5: purpose`, `6: original_bstr`.
 - **Result:** `PublicKeyCredentialRequestOptions` fields: `rpId`, `challenge_b32`, `allowCredentials = [VCAPREQ]`, `userVerification = "required"`.
 - The service performs the full Ticket issuance of §7.3 / §7.5 and places the Ticket inside VCAPREQ (op 1). If VCAPREQ would exceed 1023 bytes it returns `400` and the platform uses the native route.
+- The state basis is the archived state of the slot (§7.3, null key 5): the StateProof verified by `webauthn-create-result` for the slot's first Ticket, and thereafter the result of the last `webauthn-sign-result` or native archive. The page calls no GetState first. When the slot is in doubt, the service returns `409` with error code 7 and the page reconciles through §8.5 before repeating the request.
 
 ### 8.4 `webauthn-sign-result`
 
@@ -372,18 +374,23 @@ These operations support VCAP §12.9. The page is served from an RP ID in `webau
 
 Returns request options for a wrapped GetState (op 2) or Recover (op 4) with a fresh challenge, for the unknown-outcome procedure of VCAP §12.9.3.
 
+- **Request:** scope + `5: op` (2 or 4), `6: originalDigest_b32` (optional for op 2, required for op 4).
+- **Result:** `PublicKeyCredentialRequestOptions` fields as in §8.3, with VCAPREQ carrying the op, the slot handle and, when given, key 6.
+- For a slot in doubt, the service SHOULD request op 2 with the `originalDigest` of the in-doubt Ticket. The result carries the StateProof and, if the signature was made, the Signed record, so one browser call resolves the outcome (VCAP §7.14.5). The service then archives the Signed record, or, if nothing was signed, keeps the Ticket valid for a new `webauthn-sign-options` request started by the user.
+
 ---
 
 ## 9. Procedures
 
-### 9.1 Onboarding (VCAP §12.5 steps 4–11)
+### 9.1 Onboarding (VCAP §12.5 steps 4–10)
 
 1. GetState with a challenge the platform generates itself, to learn device, resetEpoch and configurationDigest; `registration` → verify the TrustConfig digest and the StateProof (§7.1).
 2. `challenge` → CreateIdentity(CLIENT) with that challenge → `kel-ticket` (purpose 1) with the returned StateProof and an `icp` using `clientWitnesses` / `clientToad`; Sign; `kel-archive`. The enterprise creates the agent from the archived ICP; `kel-status` reports `businessAuthorized` when it has.
 3. `agent-material` → build CLIENT IXN; `kel-ticket` (purpose 2); Sign; `kel-archive`.
 4. `challenge` → CreateIdentity(WORK) → `kel-ticket` (purpose 3) with an `icp` using `workWitnesses` / `workToad`; Sign; `kel-archive`; wait for `kel-status` network acceptance.
 5. Build RPY end-role; `message-ticket` (purpose 14); Sign; `gateway-submit`.
-6. Build AGENT session; `message-ticket` (purpose 19); Sign; `gateway-submit` → grant; then `agent-session` requests.
+
+Steps 1–5 run in one context: one PIN entry and four UPs, one per signature (VCAP §12.5). The AGENT session is not part of onboarding: when the platform first needs the Agent, it builds an AGENT session, requests it with `message-ticket` (purpose 19), signs it and calls `gateway-submit` → grant, then sends `agent-session` requests.
 
 ### 9.2 Signing
 
