@@ -29,7 +29,6 @@
 9. Procedures
 10. Enterprise Service Requirements
 11. Security and Privacy Considerations
-12. Decisions and Open Issues
 - Appendix A Operation Table
 - Appendix B Purpose Registry
 - Appendix C Wallet Operation Profiles
@@ -56,7 +55,9 @@ In scope:
 - reading publication, acceptance and business status;
 - the enterprise endpoints used by the WebAuthn route (VCAP §12.9).
 
-Out of scope: employee authentication itself (OAuth 2.0 / OIDC, §5.4), enterprise approval workflows, the PDP, agent and witness protocols, key custody of the enterprise's role keys, and the manufacturing and IT procedures of VCAP §12.5 steps 1–3. The platform learns the device identifier, reset epoch, configuration digest and slots of an authenticator from its StateProof.
+**Agent profile.** The Agent that a CLIENT AID controls (VAF §3.2) is reached through an agent profile. VCAP-EI 1.0 defines one, the **KERIA agent profile**: the enterprise creates a KERIA agent from the CLIENT inception (purpose 1), the CLIENT approves its delegation (purpose 2, `agent-material`), and the platform reaches it through AGENT sessions (purpose 19, `agent-session`) limited by a wallet operation profile (Appendix C). A service that offers none of purposes 1, 2 and 19 does not depend on the agent implementation. Other agent profiles are added in later versions.
+
+Out of scope: employee authentication itself (OAuth 2.0 / OIDC, §5.4), enterprise approval workflows, the PDP, agent and witness protocols, key custody of the enterprise's role keys, and the manufacturing and IT procedures of VCAP §12.5 steps 1–3, and recovery of operations that span several EXN messages (for example IPEX grant and admit; VAF §1.2). The platform learns the device identifier, reset epoch, configuration digest and slots of an authenticator from its StateProof.
 
 ### 1.3 Design Principles
 
@@ -169,7 +170,7 @@ VCAP §2 (error precedence unspecified) applies equally here.
 
 ### 5.3 Configuration
 
-In 1.0 the platform obtains `{base}`, the IdP (issuer, client registration) and, for browser pages, the RP ID out of band, for example through enterprise device management (MDM) or a configuration file installed by IT. This document defines no discovery document; a `/.well-known/` document is a candidate for a later version.
+In 1.0 the platform obtains `{base}`, the IdP (issuer, client registration) and, for browser pages, the RP ID out of band, for example through enterprise device management (MDM) or a configuration file installed by IT. This document defines no discovery document.
 
 ### 5.4 Authentication
 
@@ -305,7 +306,7 @@ Submits a signed EXN, RPY or AGENT message for delivery or execution.
 
 ### 7.11 `agent-session` (conditionally required: if the service offers purpose 19)
 
-Relays one request to the employee's KERIA Agent under an AGENT session (VCAP §8.5.3).
+Relays one request to the employee's Agent under an AGENT session (VCAP §8.5.3), per the KERIA agent profile (§1.2).
 
 - **Request:** scope + `5: grant_bstr`, `6: clientAid_t44`, `7: agentAid_t44`, `8: path_tstr`, `9: method_tstr`, `10: body_bstr / null`, `11: headers`, `12: requestId_b16 / null`.
   - `path` is the request path, optionally followed by `?` and a query string of `name=value` pairs joined by `&`, percent-encoded.
@@ -338,7 +339,7 @@ Returns the archived original of a non-KEL message and, if archived, its device 
 
 ## 8. WebAuthn Route Operations (Provisional)
 
-**This section is provisional and non-normative in 1.0.** The VCAP WebAuthn route is an optional authenticator feature (VCAP §2.1, §7.14) whose browser and platform compatibility is being tested (VAF §13); the outcome may change VCAP §7.14. An Enterprise Service MAY implement this section; conformance to 1.0 does not require it. It becomes normative in a later version once testing is complete.
+**This section is provisional and non-normative in 1.0.** The VCAP WebAuthn route is an optional authenticator feature (VCAP §2.1, §7.14) which is provisional (VCAP §7.14); a change there may change this section. An Enterprise Service MAY implement this section; conformance to 1.0 does not require it.
 
 Results that carry WebAuthn options are CBOR maps whose keys are the WebAuthn member names as text strings, an exception to §5.1 item 2, so that a page can pass them to the WebAuthn API after conversion.
 
@@ -446,26 +447,6 @@ The original and its Signed result MUST be stored durably before the service rep
 
 ---
 
-## 12. Decisions and Open Issues
-
-### 12.1 Decisions Recorded for 1.0 (2026-11-02)
-
-1. **State basis:** an enterprise service MAY require a StateProof for any Ticket (§7.3). Supporting the archived-head basis is optional.
-2. **Attestation:** the service verifies StateProofs with the attestation public key it enrolled from the manufacturer's enrollment package (VCAP Appendix D); Ticket requests carry no certificate chain.
-3. **Purpose registry:** this document fixes purposes 1..127 (Appendix B); 128 and above are enterprise-defined.
-4. **Wallet operation profile:** profiles are registered in Appendix C; `"veridian"` is the first.
-5. **WebAuthn operations** (Section 8) are provisional and non-normative in 1.0, as the WebAuthn route is optional in VCAP.
-6. **IPEX operation recovery** across several EXN messages is excluded from 1.0 and left to candidate profile VAF-IPEX-1.
-7. **Discovery** is out of band in 1.0 (§5.3).
-8. **Extensibility:** request and response structures are closed (§5.1); additions use a new version path.
-
-### 12.2 Open Issues
-
-1. **Profile versioning.** Appendix C profiles have no version field; a change to the path list needs a new profile name.
-2. **Further purposes.** Other IPEX messages (for example apply, agree, spurn) and other RPY routes may need purposes of their own.
-
----
-
 ## Appendix A Operation Table
 
 | Operation | Class | Request keys after scope | Result |
@@ -555,7 +536,7 @@ Derived from the Veridian operations list (signify-ts at commit `62a646f1eb67c30
 
 ### C.2 Registering a Profile
 
-A new profile is added to this appendix with a new name. Its entry lists every (method, path, query, header, body) form it allows, in the format of C.1. Changing an existing profile's list requires a new name (open issue 12.2 item 1).
+A new profile is added to this appendix with a new name. Its entry lists every (method, path, query, header, body) form it allows, in the format of C.1. Changing an existing profile's list requires a new name.
 
 ## Appendix D References
 
