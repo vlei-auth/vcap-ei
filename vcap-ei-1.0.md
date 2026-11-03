@@ -328,6 +328,7 @@ Returns the material the platform needs to approve Agent delegation (VCAP §12.5
 
 - `aid-status`: scope + `5: aid_t44` → `active_bool`. Lets a platform stop using an AID the enterprise has deactivated (VCAP §12.7).
 - `reset-reason`: scope → `[state_tstr, reason_bstr] / null`. Tells the platform why the enterprise requires a Reset, if it does.
+- `reset-report`: `{1:device_b32, 2:bindingProof}` (no scope) → `[state_tstr, resetEpoch]`, where `state` is `"recorded"` (a newer epoch was recorded now), `"known"` (the epoch was already on record) or `"pending-personalization"` (recorded, and IT has not yet issued a TrustConfig for it). Reports a Reset per §9.5. A BindingProof that does not verify, or whose tenant or root digest is not this enterprise's, is `403`. A report with an epoch lower than the record is `409`, because an epoch never decreases. The service MUST be idempotent per (device, resetEpoch).
 
 ### 7.14 `message-original` (optional)
 
@@ -417,6 +418,14 @@ PrepareRotation → `kel-ticket` (purpose 5) with the returned StateProof → Si
 
 After Reset the device has a new resetEpoch; the platform calls `registration` with it. Requests for the old epoch return `403`. `aid-status` reports the old AIDs as inactive once the enterprise has deactivated them.
 
+When the platform finds the device in ENTERPRISE_BOUND or PERSONALIZED_NO_PIN (status-mode GetState), or `registration` returns `403` or `404` for the epoch the platform last used, the platform obtains a BindingProof with binding-mode GetState (VCAP §7.4.3) and a challenge it generates itself, and submits it with `reset-report`. The enterprise:
+
+1. verifies the BindingProof under the device's enrolled attestation key and checks the tenant and enterpriseRootDigest;
+2. if the reported resetEpoch is higher than its record, records the Reset, deactivates the AIDs of the earlier epochs and stops issuing Tickets for them (VCAP §12.7 step 1, VAF §6.5), whether or not it ordered the Reset;
+3. returns what the platform should tell the user: wait for re-personalization by IT, or contact IT.
+
+The platform MUST NOT guess or increment a reset epoch itself.
+
 ---
 
 ## 10. Enterprise Service Requirements
@@ -449,7 +458,7 @@ The original and its Signed result MUST be stored durably before the service rep
 
 1. **Bearer token theft** lets an attacker request Tickets for content the enterprise approves, but not produce signatures: those still need the device, PIN and touch. Enterprises SHOULD bind tokens to the client (for example DPoP, RFC 9449) and keep them short-lived.
 2. **Content approval** is the main control against induced signing (VCAP §13.2 item 1). The approval UI SHOULD present the decoded message, not just its purpose.
-3. **StateProof disclosure**: StateProofs carry all four slots and a persistent device identifier (VAF §9.3). The service MUST NOT forward them to Agents, receivers or third parties.
+3. **StateProof and BindingProof disclosure**: StateProofs carry all four slots and a persistent device identifier, and BindingProofs carry the device identifier, tenant and reset epoch (VAF §9.3). The service MUST NOT forward them to Agents, receivers or third parties.
 4. **Agent relay** is limited to the requests of the declared wallet operation profile (§7.11), which keeps `agent-session` from acting as a general proxy to the Agent.
 5. **Receiver echo** (§7.9) prevents a compromised platform from redirecting delivery without detection, but the enterprise remains responsible for choosing receivers.
 
@@ -473,6 +482,7 @@ The original and its Signed result MUST be stored durably before the service rep
 | agent-material | conditionally required (purposes 1, 2) | 5 clientAid | [clientIcp, agentDip, agentSigs] |
 | aid-status | optional | 5 aid | active |
 | reset-reason | optional | — | [state, reason] / null |
+| reset-report | optional | (1:device, 2:BindingProof only) | [state, resetEpoch] |
 | message-original | optional | 5 ticketId | [original, Signed?] |
 | webauthn-* | provisional | Section 8 | Section 8 |
 
