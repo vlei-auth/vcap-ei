@@ -495,8 +495,8 @@ The original and its Signed result MUST be stored durably before the service rep
 | 3 | WORK inception | WORK | ICP | 8 |
 | 4 | WORK interaction (seal anchoring) | WORK | IXN | 9 |
 | 5 | WORK rotation | WORK | ROT | 10 |
-| 10 | IPEX admit | WORK | EXN | 11 |
-| 11 | IPEX grant | WORK | EXN | 11 |
+| 10 | IPEX grant | WORK | EXN | 11 |
+| 11 | IPEX admit | WORK | EXN | 11 |
 | 12 | IPEX offer | WORK | EXN | 11 |
 | 13 | Remote-signing response (EXN sent on behalf of the WORK AID at a peer's request) | WORK | EXN | 11 |
 | 14 | Agent end-role (`/end/role/add`) | WORK | RPY | 12 |
