@@ -1,6 +1,6 @@
 # VCAP Enterprise Interface (VCAP-EI) 1.0
 
-*Editor's Draft — 2 November 2026*
+*Editor's Draft — 4 November 2026*
 
 **Specification identifier:** VCAP-EI-1.0  
 **Editor's Draft URL:** https://vlei-auth.github.io/vcap-ei/  
@@ -63,7 +63,7 @@ Out of scope: employee authentication itself (OAuth 2.0 / OIDC, §5.4), enterpri
 
 1. **The platform is untrusted** (VAF §2.2). No request field grants authority; authority comes from the authenticated employee and the enterprise's own records.
 2. **The enterprise never signs for the device and never asks for a re-signature** when an outcome is unknown. Every write is idempotent on a stable key and every unknown outcome is resolved by read-only reconciliation (VCAP §12.3).
-3. **Outcomes are reported per stage**: device signed, enterprise archived, network accepted, business authorized (VAF §2.3). No response collapses them.
+3. **Outcomes are reported per stage**: device signed, enterprise archived, network accepted, business authorized (VAF §2.3). No response collapses them. The further VAF stage **credential verified** applies only to presentations of a credential (IPEX grant and offer, purposes 10 and 12): it is the receiving verifier's result, reported separately from delivery (§6.3), and is not reported for any other purpose.
 
 ---
 
@@ -174,7 +174,7 @@ In 1.0 the platform obtains `{base}`, the IdP (issuer, client registration) and,
 
 ### 5.4 Authentication
 
-1. Every request carries `Authorization: Bearer <token>` (RFC 6750). Token issuance (for example OIDC with the enterprise IdP) is out of scope.
+1. Every request carries `Authorization: Bearer <token>` (RFC 6750). Token issuance (for example OIDC with the enterprise IdP) is out of scope. A native platform SHOULD obtain the token as RFC 8252 specifies, with the authorization code grant and PKCE (RFC 7636) in an external user agent, and SHOULD keep any refresh token in the operating system's protected key store.
 2. The enterprise service derives a principal from the token and MUST re-read the principal's current authority over the asset and slot for every request, including on completion of long operations, so that revocation takes effect on the next request (VAF §8.2).
 3. The bearer token is independent of the authenticator PIN token. A platform MUST NOT send the PIN, pinHash, shared secret or pinUvAuthToken to the enterprise.
 
@@ -265,6 +265,8 @@ Requests a Ticket for EXN, RPY or AGENT.
 - **Request:** as §7.3.
 - **Result:** `[Ticket_bstr, receiver_tstr]`. `receiver` is the destination the enterprise has configured for the purpose; the platform passes it to `gateway-submit` (§7.9) and, for AGENT, places it in the session body (VCAP §8.5.3).
 - The service MUST verify the route, recipients, attachments, embedded material and validity (`dt` / `expires`) per VAF §5.3 and §7, and for AGENT the claims, receiver and validity window of VCAP §8.5.3.
+- For purpose 11 the service is the verifier (VAF §8.3) of the credential carried by the grant being admitted, and MUST complete the credential trust checks of VAF §8.2 before issuing the Ticket.
+- For purpose 15 the original MUST be an `exn` whose `r` is `/challenge/response`, whose `i` is the slot's AID, whose `rp` is the AID of the party that issued the challenge, whose `p` is empty, whose `e` is empty or absent, and whose `a` is exactly `{"words": [...]}` with 12 or 24 words of the BIP-39 English word list. The words reach the employee out of band, so the service cannot check where they came from: its approval establishes only that the employee answers this recipient now. The service SHOULD refuse a second Ticket for the same recipient and words once a response with them has been signed.
 - **Idempotency:** a repeated request with identical bytes returns the same result.
 
 ### 7.6 `kel-archive` (required)
@@ -324,7 +326,7 @@ Returns the material the platform needs to approve Agent delegation (VCAP §12.5
 - **Request:** scope + `5: clientAid_t44`.
 - **Result:** `[clientIcp_bstr, agentDip_bstr, [*agentSignature_tstr]]`.
 
-### 7.13 `aid-status` and `reset-reason` (optional)
+### 7.13 `aid-status`, `reset-reason` and `reset-report` (optional)
 
 - `aid-status`: scope + `5: aid_t44` → `active_bool`. Lets a platform stop using an AID the enterprise has deactivated (VCAP §12.7).
 - `reset-reason`: scope → `[state_tstr, reason_bstr] / null`. Tells the platform why the enterprise requires a Reset, if it does.
@@ -386,7 +388,7 @@ Returns request options for a wrapped GetState (op 2) or Recover (op 4) with a f
 
 ### 9.1 Onboarding (VCAP §12.5 steps 4–10)
 
-1. GetState with a challenge the platform generates itself, to learn device, resetEpoch and configurationDigest; `registration` → verify the TrustConfig digest and the StateProof (§7.1).
+1. GetState with a challenge the platform generates itself, to learn device, resetEpoch and configurationDigest; `registration` → verify the TrustConfig digest and the StateProof (§7.1). Before the PIN, a platform identifies the device as follows. If status-mode GetState reports ENTERPRISE_BOUND or PERSONALIZED_NO_PIN, binding-mode GetState (VCAP §7.4.3) with a challenge the platform generates gives device, resetEpoch and configurationDigest, which the platform checks against `registration` and the registered `attestationPublic` before asking for the PIN. A PIN_READY device reports no device identifier without a PIN, so the platform confirms which device it is only from the StateProof of this step, after the PIN, and MUST NOT request a Ticket before that StateProof verifies.
 2. `challenge` → CreateIdentity(CLIENT) with that challenge → `kel-ticket` (purpose 1) with the returned StateProof and an `icp` using `clientWitnesses` / `clientToad`; Sign; `kel-archive`. The enterprise creates the agent from the archived ICP; `kel-status` reports `businessAuthorized` when it has.
 3. `agent-material` → build CLIENT IXN; `kel-ticket` (purpose 2); Sign; `kel-archive`.
 4. `challenge` → CreateIdentity(WORK) → `kel-ticket` (purpose 3) with an `icp` using `workWitnesses` / `workToad`; Sign; `kel-archive`; wait for `kel-status` network acceptance.
@@ -500,13 +502,14 @@ The original and its Signed result MUST be stored durably before the service rep
 | 12 | IPEX offer | WORK | EXN | 11 |
 | 13 | Remote-signing response (EXN sent on behalf of the WORK AID at a peer's request) | WORK | EXN | 11 |
 | 14 | Agent end-role (`/end/role/add`) | WORK | RPY | 12 |
+| 15 | Challenge response (`/challenge/response` EXN answering a peer's identity challenge, §7.5) | WORK | EXN | 11 |
 | 19 | AGENT session | CLIENT | AGENT | 5 |
 
 Ranges:
 
 | Range | Use |
 |---|---|
-| 1..127 | Assigned by this document. Values 6–9 and 15–18 are unassigned; 20–127 are reserved |
+| 1..127 | Assigned by this document. Values 6–9 and 16–18 are unassigned; 20–127 are reserved |
 | 128..65535 | Enterprise-defined. An enterprise MUST map each such value to exactly one (owner, kind) pair of VCAP Appendix B, and a platform MUST NOT assume interoperability for them |
 
 A purpose determines the capability bit the service checks and the role key it selects (§10.3 item 1); it is not sent to the authenticator. The route, recipients and embedded material of an EXN are checked by the service against the purpose.
@@ -515,9 +518,9 @@ A purpose determines the capability bit the service checks and the role key it s
 
 An AGENT session names a profile in its claims (`{1:walletProfile}`, VCAP §8.5.3). The profile fixes exactly which Agent requests `agent-session` relays. A request outside the profile MUST be refused. A profile MUST NOT include KEL events, RPY, EXN, agent creation, credential issuance or controller operations (VCAP §8.5.3).
 
-### C.1 Profile `"veridian"`
+### C.1 Profile `"vaf"`
 
-Derived from the Veridian operations list (signify-ts at commit `62a646f1eb67c30c8f1aecfe628d81dd693b60f2`). Path segments in braces are single percent-decoded segments that MUST NOT be empty, `.`, `..`, or contain `/`, `\`, `%` or NUL.
+The Agent requests of a holder wallet, in the forms that signify-ts at commit `62a646f1eb67c30c8f1aecfe628d81dd693b60f2` sends them, including KERI challenge–response, which a holder uses to prove control of its AID to a peer such as a QVI. Path segments in braces are single percent-decoded segments that MUST NOT be empty, `.`, `..`, or contain `/`, `\`, `%` or NUL.
 
 **Reads** (no `requestId`):
 
@@ -535,6 +538,7 @@ Derived from the Veridian operations list (signify-ts at commit `62a646f1eb67c30
 | GET | `/credentials/{said}` | — |
 | GET | `/registries/{ri}/{said}` | — |
 | GET | `/schema/{said}` | — |
+| GET | `/challenges` | `strength`: `128` or `256` |
 | POST | `/credentials/query` | body: JSON with exactly `filter` (object), `sort` (array of strings, each 1..256), `skip` (0..2^31−1), `limit` (1..100); ≤ 8192 bytes |
 
 **Writes** (`requestId` required):
@@ -547,10 +551,14 @@ Derived from the Veridian operations list (signify-ts at commit `62a646f1eb67c30
 | POST | `/oobis` | JSON with `url` (http/https, no userinfo or fragment) and optional `oobialias` |
 | DELETE | `/credentials/{said}` | none; `{said}` is a 44-character `E` SAID |
 | PUT | `/notifications/{said}` | none |
+| POST | `/challenges_verify/{pre}` | JSON with exactly `words` (array of 12 or 24 strings, each 1..16 characters) |
+| PUT | `/challenges_verify/{pre}` | JSON with exactly `said` (a 44-character `E` SAID) |
 
 **Headers:** at most two; `accept` with value `application/json` or `application/json+cesr`, and, for GET `/identifiers` and `/notifications` only, `range` of the form `aids=a-b` or `notes=a-b` with `b − a < 100`. Write requests carry no headers and no query string.
 
 **Response:** `[1, status, contentType / null, body_bstr, contentRange / null]`, at most 65 536 bytes; larger results MUST be paginated, never truncated.
+
+GET `/challenges` returns words for the employee to give to a peer. POST `/challenges_verify/{pre}` asks the Agent to confirm that `pre` has sent a signed response containing those words; it returns a long-running operation read with GET `/operations/{name}`. PUT `/challenges_verify/{pre}` records the response `said` as accepted. The employee's own response to a peer's challenge is not an Agent request: it is an EXN signed under purpose 15 and delivered with `gateway-submit` (§7.9).
 
 ### C.2 Registering a Profile
 
@@ -571,5 +579,7 @@ A new profile is added to this appendix with a new name. Its entry lists every (
 ### D.2 Informative References
 
 - [RFC9449] OAuth 2.0 Demonstrating Proof of Possession (DPoP) — <https://www.rfc-editor.org/rfc/rfc9449>
+- [RFC8252] OAuth 2.0 for Native Apps — <https://www.rfc-editor.org/rfc/rfc8252>
+- [RFC7636] Proof Key for Code Exchange (PKCE) — <https://www.rfc-editor.org/rfc/rfc7636>
 - [WEBAUTHN] W3C, Web Authentication Level 3 — <https://www.w3.org/TR/webauthn-3/>
-- [SIGNIFY-TS] signify-ts, source of the `"veridian"` profile (Appendix C.1) — <https://github.com/WebOfTrust/signify-ts>
+- [SIGNIFY-TS] signify-ts, source of the request forms of the `"vaf"` profile (Appendix C.1) — <https://github.com/WebOfTrust/signify-ts>
