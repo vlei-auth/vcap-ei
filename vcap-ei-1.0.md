@@ -50,12 +50,12 @@ In scope:
 - single-use challenges for StateProof;
 - Ticket requests for KEL and non-KEL kinds;
 - archiving device results, and retrieving archived originals and signatures for recovery;
-- submitting signed EXN / RPY / AGENT messages for delivery;
-- relaying Agent requests under an AGENT session;
+- submitting signed EXN / RPY messages for delivery;
+- relaying the employee's Agent requests under the bearer token, without the authenticator;
 - reading publication, acceptance and business status;
 - the enterprise endpoints used by the WebAuthn route (VCAP §12.9).
 
-**Agent profile.** The Agent that a CLIENT AID controls (VAF §3.2) is reached through an agent profile. VCAP-EI 1.0 defines one, the **KERIA agent profile**: the enterprise creates a KERIA agent from the CLIENT inception (purpose 1), the CLIENT approves its delegation (purpose 2, `agent-material`), and the platform reaches it through AGENT sessions (purpose 19, `agent-session`) limited by a wallet operation profile (Appendix C). A service that offers none of purposes 1, 2 and 19 does not depend on the agent implementation. Other agent profiles are added in later versions.
+**Agent profile.** The Agent that a CLIENT AID controls (VAF §3.2) is reached through an agent profile. VCAP-EI 1.0 defines one, the **KERIA agent profile**: the enterprise creates a KERIA agent from the CLIENT inception (purpose 1), the CLIENT approves its delegation (purpose 2, `agent-material`), and the platform reaches it through `agent-session` under the employee's bearer token, limited by a wallet operation profile (Appendix C). Agent requests produce no slot signature and do not use the authenticator. A service that offers neither of purposes 1 and 2 does not depend on the agent implementation. Other agent profiles are added in later versions.
 
 Out of scope: employee authentication itself (OAuth 2.0 / OIDC, §5.4), enterprise approval workflows, the PDP, agent and witness protocols, key custody of the enterprise's role keys, and the manufacturing and IT procedures of VCAP §12.5 steps 1–3, and recovery of operations that span several EXN messages (for example IPEX grant and admit; VAF §1.2). The platform learns the device identifier, reset epoch, configuration digest and slots of an authenticator from its StateProof.
 
@@ -89,7 +89,7 @@ Terms of VCAP §3 and VAF §2 apply. Additionally:
 | scope | The (device, resetEpoch, slot, configurationDigest) tuple a request concerns (§6.1) |
 | purpose | An enterprise business operation identifier that maps to exactly one (owner, kind) pair (Appendix B) |
 | operation | One durable enterprise-side action, identified by an `operationId`, created when a signed message is admitted |
-| receiver | The identifier of the destination an EXN / RPY / AGENT result is delivered to, chosen by the enterprise for each purpose and returned with the Ticket (§7.5) |
+| receiver | The identifier of the destination an EXN / RPY result is delivered to, chosen by the enterprise for each purpose and returned with the Ticket (§7.5) |
 | ticketId | The first 16 bytes of `H(ticket_bstr)` (VCAP §3.2), identifying one issued Ticket |
 
 ---
@@ -260,11 +260,11 @@ Requests reissue for an **existing frozen original** after a fresh StateProof sh
 
 ### 7.5 `message-ticket` (required)
 
-Requests a Ticket for EXN, RPY or AGENT.
+Requests a Ticket for EXN or RPY.
 
 - **Request:** as §7.3.
-- **Result:** `[Ticket_bstr, receiver_tstr]`. `receiver` is the destination the enterprise has configured for the purpose; the platform passes it to `gateway-submit` (§7.9) and, for AGENT, places it in the session body (VCAP §8.5.3).
-- The service MUST verify the route, recipients, attachments, embedded material and validity (`dt` / `expires`) per VAF §5.3 and §7, and for AGENT the claims, receiver and validity window of VCAP §8.5.3.
+- **Result:** `[Ticket_bstr, receiver_tstr]`. `receiver` is the destination the enterprise has configured for the purpose; the platform passes it to `gateway-submit` (§7.9).
+- The service MUST verify the route, recipients, attachments, embedded material and validity (`dt`) per VAF §5.3 and §7.
 - For purpose 11 the service is the verifier (VAF §8.3) of the credential carried by the grant being admitted, and MUST complete the credential trust checks of VAF §8.2 before issuing the Ticket.
 - For purpose 15 the original MUST be an `exn` whose `r` is `/challenge/response`, whose `i` is the slot's AID, whose `rp` is the AID of the party that issued the challenge, whose `p` is empty, whose `e` is empty or absent, and whose `a` is exactly `{"words": [...]}` with 12 or 24 words of the BIP-39 English word list. The words reach the employee out of band, so the service cannot check where they came from: its approval establishes only that the employee answers this recipient now. The service SHOULD refuse a second Ticket for the same recipient and words once a response with them has been signed.
 - **Idempotency:** a repeated request with identical bytes returns the same result.
@@ -293,30 +293,30 @@ Returns the archived original and, if archived, the device result (VCAP §12.3 K
 
 ### 7.9 `gateway-submit` (required)
 
-Submits a signed EXN, RPY or AGENT message for delivery or execution.
+Submits a signed EXN or RPY message for delivery or execution.
 
 - **Request:** scope + `5: purpose`, `6: original_bstr`, `7: ticketId_b16`, `8: Signed`, `9: receiver_tstr`.
 - **Result:** `[operationId_b32, state, result / null]`.
 - Repeating the identical request returns the current state of the same operation; this is also how the platform reads the outcome of an `IN_DOUBT` operation if the service does not offer §7.10.
 - `receiver` MUST equal the value returned by `message-ticket` (§7.5); the service rejects any other value, so a redirection of the platform becomes visible.
 - The service MUST archive the signature before any delivery side effect, and MUST deliver the **same** signed message on every retry. An `IN_DOUBT` operation is never resolved by a new signature.
-- For AGENT (purpose 19) the result of `COMPLETED` is the session grant: `grant_bstr`, an opaque value of at most 1024 bytes that the enterprise service issues and alone interprets. It is valid until the session's `expires` and is presented to `agent-session` (§7.11).
 
 ### 7.10 `operation-status` (optional)
 
 - **Request:** scope + `5: operationId_b32`.
 - **Result:** `[state, result / null, businessAuthorized_bool / null]`.
 
-### 7.11 `agent-session` (conditionally required: if the service offers purpose 19)
+### 7.11 `agent-session` (conditionally required: if the service offers purposes 1 and 2)
 
-Relays one request to the employee's Agent under an AGENT session (VCAP §8.5.3), per the KERIA agent profile (§1.2).
+Relays one request to the employee's Agent, per the KERIA agent profile (§1.2). The request is authorized by the bearer token alone (§5.4); it needs no authenticator, PIN or touch, and a platform MUST NOT require the authenticator for it.
 
-- **Request:** scope + `5: grant_bstr`, `6: clientAid_t44`, `7: agentAid_t44`, `8: path_tstr`, `9: method_tstr`, `10: body_bstr / null`, `11: headers`, `12: requestId_b16 / null`.
+- **Request:** scope + `5: walletProfile_tstr`, `6: clientAid_t44`, `7: agentAid_t44`, `8: path_tstr`, `9: method_tstr`, `10: body_bstr / null`, `11: headers`, `12: requestId_b16 / null`.
   - `path` is the request path, optionally followed by `?` and a query string of `name=value` pairs joined by `&`, percent-encoded.
   - `method` is the uppercase HTTP method.
   - `headers = [* [name_tstr, value_tstr]]`, names in lowercase.
 - **Result:** `[1, status, contentType_tstr / null, body_bstr, contentRange_tstr / null]` from the Agent response, at most 65 536 bytes in total (Appendix C.1).
-- The service MUST check, on every request, the grant's validity window, that the grant belongs to the principal, current employee authority, and that the request matches the wallet operation profile named by the grant's claims (Appendix C). Any other request is `403`.
+- `walletProfile` names a wallet operation profile of Appendix C that the enterprise has enabled for the principal.
+- The service MUST check, on every request, current employee authority over the asset and slot (§5.4 item 2), that `clientAid` is the CLIENT AID archived for this slot with completed business acceptance and `agentAid` the Agent created from it, and that the request matches the named wallet operation profile (Appendix C). Any other request is `403`.
 - Writes MUST carry a `requestId`; a repeated `requestId` returns the stored outcome, and a write whose outcome is unknown returns `409` rather than being re-dispatched. Reads MUST NOT carry one.
 
 ### 7.12 `agent-material` (conditionally required: if the service offers purposes 1 and 2)
@@ -394,7 +394,11 @@ Returns request options for a wrapped GetState (op 2) or Recover (op 4) with a f
 4. `challenge` → CreateIdentity(WORK) → `kel-ticket` (purpose 3) with an `icp` using `workWitnesses` / `workToad`; Sign; `kel-archive`; wait for `kel-status` network acceptance.
 5. Build RPY end-role; `message-ticket` (purpose 14); Sign; `gateway-submit`.
 
-Steps 1–5 run in one context: one PIN entry and four UPs, one per signature (VCAP §12.5). The AGENT session is not part of onboarding: when the platform first needs the Agent, it builds an AGENT session, requests it with `message-ticket` (purpose 19), signs it and calls `gateway-submit` → grant, then sends `agent-session` requests.
+Steps 1–5 run in one context: one PIN entry and four UPs, one per signature (VCAP §12.5). After step 3 the platform reads the Agent with `agent-session` and needs the authenticator only for later signatures.
+
+The device arrives in PERSONALIZED_NO_PIN (VCAP §12.5); in step 1 the platform asks the employee to choose a PIN (ClientPIN setPIN, at least the TrustConfig `minPinChars`) after the BindingProof checks and before any other command.
+
+The registration of the device and employee by the enterprise is the approval of onboarding. For purposes 1, 2, 3 and 14 the service SHOULD issue Tickets and record business acceptance without a further human decision once the request passes the checks of §7.3 and §7.5: the witness policy of `registration`, the Agent material of `agent-material`, a WORK inception whose controlling CLIENT is the one archived for this asset, and an end-role that names the Agent created for this employee. A service that requires manual review MUST say so in the `kel-status` / `operation-status` result rather than leaving the platform waiting without a state.
 
 ### 9.2 Signing
 
@@ -461,7 +465,7 @@ The original and its Signed result MUST be stored durably before the service rep
 1. **Bearer token theft** lets an attacker request Tickets for content the enterprise approves, but not produce signatures: those still need the device, PIN and touch. Enterprises SHOULD bind tokens to the client (for example DPoP, RFC 9449) and keep them short-lived.
 2. **Content approval** is the main control against induced signing (VCAP §13.2 item 1). The approval UI SHOULD present the decoded message, not just its purpose.
 3. **StateProof and BindingProof disclosure**: StateProofs carry all four slots and a persistent device identifier, and BindingProofs carry the device identifier, tenant and reset epoch (VAF §9.3). The service MUST NOT forward them to Agents, receivers or third parties.
-4. **Agent relay** is limited to the requests of the declared wallet operation profile (§7.11), which keeps `agent-session` from acting as a general proxy to the Agent.
+4. **Agent relay** is limited to the requests of the declared wallet operation profile (§7.11), which keeps `agent-session` from acting as a general proxy to the Agent. It is authorized by the bearer token only, so a stolen token exposes the Agent's data and its metadata writes until revoked, but no slot signature. Native platforms SHOULD protect the refresh token with the operating system key store and local user verification, and SHOULD rotate it on every use.
 5. **Receiver echo** (§7.9) prevents a compromised platform from redirecting delivery without detection, but the enterprise remains responsible for choosing receivers.
 
 ---
@@ -480,7 +484,7 @@ The original and its Signed result MUST be stored durably before the service rep
 | kel-status | required | 5 said, 6 originalDigest | [networkAccepted, businessAuthorized] |
 | gateway-submit | required | 5 purpose, 6 original, 7 ticketId, 8 Signed, 9 receiver | [operationId, state, result] |
 | operation-status | optional | 5 operationId | [state, result, businessAuthorized] |
-| agent-session | conditionally required (purpose 19) | 5–12 | Agent response |
+| agent-session | conditionally required (purposes 1, 2) | 5 walletProfile, 6–12 | Agent response |
 | agent-material | conditionally required (purposes 1, 2) | 5 clientAid | [clientIcp, agentDip, agentSigs] |
 | aid-status | optional | 5 aid | active |
 | reset-reason | optional | — | [state, reason] / null |
@@ -503,20 +507,19 @@ The original and its Signed result MUST be stored durably before the service rep
 | 13 | Remote-signing response (EXN sent on behalf of the WORK AID at a peer's request) | WORK | EXN | 11 |
 | 14 | Agent end-role (`/end/role/add`) | WORK | RPY | 12 |
 | 15 | Challenge response (`/challenge/response` EXN answering a peer's identity challenge, §7.5) | WORK | EXN | 11 |
-| 19 | AGENT session | CLIENT | AGENT | 5 |
 
 Ranges:
 
 | Range | Use |
 |---|---|
-| 1..127 | Assigned by this document. Values 6–9 and 16–18 are unassigned; 20–127 are reserved |
+| 1..127 | Assigned by this document. Values 6–9 and 16–18 are unassigned; 19 (formerly the AGENT session) MUST NOT be reassigned; 20–127 are reserved |
 | 128..65535 | Enterprise-defined. An enterprise MUST map each such value to exactly one (owner, kind) pair of VCAP Appendix B, and a platform MUST NOT assume interoperability for them |
 
 A purpose determines the capability bit the service checks and the role key it selects (§10.3 item 1); it is not sent to the authenticator. The route, recipients and embedded material of an EXN are checked by the service against the purpose.
 
 ## Appendix C Wallet Operation Profiles
 
-An AGENT session names a profile in its claims (`{1:walletProfile}`, VCAP §8.5.3). The profile fixes exactly which Agent requests `agent-session` relays. A request outside the profile MUST be refused. A profile MUST NOT include KEL events, RPY, EXN, agent creation, credential issuance or controller operations (VCAP §8.5.3).
+An `agent-session` request names a profile (§7.11 key 5). The profile fixes exactly which Agent requests `agent-session` relays. A request outside the profile MUST be refused. A profile MUST NOT include KEL events, RPY, EXN, agent creation, credential issuance or controller operations, because those need a slot signature and a Ticket.
 
 ### C.1 Profile `"vaf"`
 
