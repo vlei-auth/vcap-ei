@@ -330,7 +330,7 @@ Returns the material the platform needs to approve Agent delegation (VCAP §12.5
 
 - `aid-status`: scope + `5: aid_t44` → `active_bool`. Lets a platform stop using an AID the enterprise has deactivated (VCAP §12.7).
 - `reset-reason`: scope → `[state_tstr, reason_bstr] / null`. Tells the platform why the enterprise requires a Reset, if it does.
-- `reset-report`: `{1:device_b32, 2:bindingProof}` (no scope) → `[state_tstr, resetEpoch]`, where `state` is `"recorded"` (a newer epoch was recorded now), `"known"` (the epoch was already on record) or `"pending-personalization"` (recorded, and IT has not yet issued a TrustConfig for it). Reports a Reset per §9.5. A BindingProof that does not verify, or whose tenant or root digest is not this enterprise's, is `403`. A report with an epoch lower than the record is `409`, because an epoch never decreases. The service MUST be idempotent per (device, resetEpoch).
+- `reset-report`: `{1:device_b32, 2:bindingProof}` (no scope) → `[state_tstr, resetEpoch / null]`, where `state` is `"recorded"` (a Reset was recorded now), `"known"` (the Reset was already on record), `"pending-enrollment"` (recorded, and IT has not yet enrolled the device again) or `"none"` (the BindingProof shows the binding on record, so it shows no Reset); `resetEpoch` is the epoch the BindingProof reports, or null when it shows STOCK_UNBOUND. Reports a Reset per §9.5. A BindingProof that does not verify under the attestation key of a device this enterprise enrolled is `403`. A BindingProof with this enterprise's tenant and root and an epoch lower than the record is `409`, because an epoch never decreases. The service MUST be idempotent per (device, recorded resetEpoch), the epoch whose end the report records.
 
 ### 7.14 `message-original` (optional)
 
@@ -422,12 +422,12 @@ PrepareRotation → `kel-ticket` (purpose 5) with the returned StateProof → Si
 
 ### 9.5 Reset (VCAP §12.7)
 
-After Reset the device has a new resetEpoch; the platform calls `registration` with it. Requests for the old epoch return `403`. `aid-status` reports the old AIDs as inactive once the enterprise has deactivated them.
+After Reset the device is in STOCK_UNBOUND with a new resetEpoch and has no enterprise binding. Once IT has enrolled it again (VCAP §12.7 step 3), the platform calls `registration` with the new epoch. Requests for the old epoch return `403`. `aid-status` reports the old AIDs as inactive once the enterprise has deactivated them.
 
-When the platform finds the device in ENTERPRISE_BOUND or PERSONALIZED_NO_PIN (status-mode GetState), or `registration` returns `403` or `404` for the epoch the platform last used, the platform obtains a BindingProof with binding-mode GetState (VCAP §7.4.3) and a challenge it generates itself, and submits it with `reset-report`. The enterprise:
+When the platform finds a device it used before in STOCK_UNBOUND, ENTERPRISE_BOUND or PERSONALIZED_NO_PIN (status-mode GetState), or `registration` returns `403` or `404` for the epoch the platform last used, the platform obtains a BindingProof with binding-mode GetState (VCAP §7.4.3) and a challenge it generates itself, and submits it with `reset-report`. The enterprise:
 
-1. verifies the BindingProof under the device's enrolled attestation key and checks the tenant and enterpriseRootDigest;
-2. if the reported resetEpoch is higher than its record, records the Reset, deactivates the AIDs of the earlier epochs and stops issuing Tickets for them (VCAP §12.7 step 1, VAF §6.5), whether or not it ordered the Reset;
+1. verifies the BindingProof under the device's enrolled attestation key;
+2. if the BindingProof shows STOCK_UNBOUND, a tenant or enterpriseRootDigest other than its own, or a resetEpoch higher than its record, records the Reset, deactivates the AIDs of the earlier epochs and stops issuing Tickets for them (VCAP §12.7 step 1, VAF §6.5), whether or not it ordered the Reset;
 3. returns what the platform should tell the user: wait for re-personalization by IT, or contact IT.
 
 The platform MUST NOT guess or increment a reset epoch itself.
