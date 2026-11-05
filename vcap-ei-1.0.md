@@ -8,7 +8,7 @@
 **Editors:**
   * Fan Dang (ACentauri Technology Limited)
 
-**Scope:** The interface between a platform (wallet or enterprise web page) and an enterprise service that issues Tickets, archives signatures, publishes KERI material and relays Agent access for vLEI Key authenticators.
+**Scope:** The interface between a platform (wallet or enterprise web page) and an enterprise service that issues Tickets, archives signatures, publishes KERI material and relays Agent access for VCAP authenticators.
 
 **Companion documents:** [VAF 1.0](https://vlei-auth.github.io/vaf/) (architecture and obligations), [VCAP 1.0](https://vlei-auth.github.io/vcap/) (authenticator protocol). This document uses the data structures of VCAP §9 unchanged.
 
@@ -40,7 +40,7 @@
 
 ### 1.1 Purpose
 
-A vLEI Key signs only with a Ticket from the enterprise (VCAP §1.1 rule 2). Every signature therefore involves two exchanges: platform ↔ authenticator (VCAP) and platform ↔ enterprise (this document). VAF §1.1 states that "any KERI client that implements VCAP and obtains enterprise Tickets can use the same authenticator"; this interface is what makes that statement testable.
+An authenticator signs only with a Ticket from the enterprise (VCAP §1.1 item 3). Every signature therefore involves two exchanges: platform ↔ authenticator (VCAP) and platform ↔ enterprise (this document). VAF §1.1 states that "any KERI client that implements VCAP and obtains enterprise Tickets can use the same authenticator"; this interface is what makes that statement testable.
 
 ### 1.2 Scope
 
@@ -512,7 +512,7 @@ Ranges:
 
 | Range | Use |
 |---|---|
-| 1..127 | Assigned by this document. Values 6–9 and 16–18 are unassigned; 19 (formerly the AGENT session) MUST NOT be reassigned; 20–127 are reserved |
+| 1..127 | Assigned by this document. Values 6–9 and 16–18 are unassigned; 19 is reserved and MUST NOT be assigned; 20–127 are reserved |
 | 128..65535 | Enterprise-defined. An enterprise MUST map each such value to exactly one (owner, kind) pair of VCAP Appendix B, and a platform MUST NOT assume interoperability for them |
 
 A purpose determines the capability bit the service checks and the role key it selects (§10.3 item 1); it is not sent to the authenticator. The route, recipients and embedded material of an EXN are checked by the service against the purpose.
