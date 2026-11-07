@@ -1,6 +1,6 @@
 # VCAP Enterprise Interface (VCAP-EI) 1.0
 
-*Editor's Draft — 4 November 2026*
+*Editor's Draft — 7 November 2026*
 
 **Specification identifier:** VCAP-EI-1.0  
 **Editor's Draft URL:** https://vlei-auth.github.io/vcap-ei/  
@@ -48,7 +48,7 @@ In scope:
 
 - the enrollment record of a device the employee holds;
 - single-use challenges for StateProof;
-- Ticket requests for KEL and non-KEL kinds;
+- Ticket requests for KEL and non-KEL kinds, and, for authenticators with group member signing (VCAP §8.4.4), for member signatures on group AID events and messages;
 - archiving device results, and retrieving archived originals and signatures for recovery;
 - submitting signed EXN / RPY messages for delivery;
 - relaying the employee's Agent requests under the bearer token, without the authenticator;
@@ -63,7 +63,7 @@ Out of scope: employee authentication itself (OAuth 2.0 / OIDC, §5.4), enterpri
 
 1. **The platform is untrusted** (VAF §2.2). No request field grants authority; authority comes from the authenticated employee and the enterprise's own records.
 2. **The enterprise never signs for the device and never asks for a re-signature** when an outcome is unknown. Every write is idempotent on a stable key and every unknown outcome is resolved by read-only reconciliation (VCAP §12.3).
-3. **Outcomes are reported per stage**: device signed, enterprise archived, network accepted, business authorized (VAF §2.3). No response collapses them. The further VAF stage **credential verified** applies only to presentations of a credential (IPEX grant and offer, purposes 10 and 12): it is the receiving verifier's result, reported separately from delivery (§6.3), and is not reported for any other purpose.
+3. **Outcomes are reported per stage**: device signed, enterprise archived, network accepted, business authorized (VAF §2.3). No response collapses them. The further VAF stage **credential verified** applies only to presentations of a credential (IPEX grant and offer, purposes 10 and 12): it is the receiving verifier's result, reported separately from delivery (§6.3), and is not reported for any other purpose. A group event or message also passes **threshold met** before it is network accepted or delivered (§7.17).
 
 ---
 
@@ -165,6 +165,7 @@ error = {1: code, ? 2: detail_tstr}
 | 8 | 409 | An operation for this request is in progress or in doubt | Stop and reconcile (§9.3); never obtain a new signature to get past it |
 | 9 | 409 | Conflicts with a stored request (different original, challenge reuse) | Reconcile (§9.3) |
 | 10 | 429 / 5xx | Temporary failure | Repeat the same request |
+| 11 | 409 | The request needs group coordination first: a WORK rotation that would leave the slot outside a group's next-key commitment (VCAP §12.8 item 7.7) | Complete the pending group rotation, then repeat |
 
 VCAP §2 (error precedence unspecified) applies equally here.
 
@@ -199,7 +200,7 @@ The enterprise service MUST reject a request whose (device, resetEpoch, configur
 
 | Name | Encoding | Source |
 |---|---|---|
-| StateProof | VCAP §9.3 | GetState, CreateIdentity, PrepareRotation |
+| StateProof | VCAP §9.3; carries a `group` element when GetState was called with a group AID | GetState, CreateIdentity, PrepareRotation |
 | Ticket | VCAP §9.2 envelope, as bytes | This interface |
 | Signed | VCAP §9.4 map | Sign, UploadEnd, Recover |
 | original | The exact message bytes signed | Platform Outbox / enterprise archive |
@@ -252,6 +253,7 @@ Requests a Ticket for ICP, IXN or ROT.
 - A service that accepts null keys MUST use only its own archived head and counter as the state basis, never values supplied by the platform.
 - A service that implements §8 SHOULD accept a null key 5 for a slot whose archived state is current and not in doubt. On the WebAuthn route each StateProof costs the employee a separate browser call with its own PIN entry and UP, while `webauthn-create-result` and every `webauthn-sign-result` already keep the archived state current (VCAP §12.9).
 - The service MUST perform VCAP §12.8 and VAF §8.2 in full before signing, including SAID recomputation, prior-event and key checks, witness policy and, for ROT, `signerKeyRef = KeyRef(old.next)`.
+- For purpose 5 on a slot that holds group records, the service applies VCAP §12.8 item 7.7 and returns `409` with error code 11 when the rotation would leave the slot outside the latest next-key commitment of one of its groups.
 - **Idempotency:** a repeated request with identical bytes returns the same Ticket. A different original for a (scope, sequence) that already has a Ticket returns `409` with error code 9.
 
 ### 7.4 `kel-ticket-retry` (optional)
@@ -267,6 +269,8 @@ Requests a Ticket for EXN or RPY.
 - The service MUST verify the route, recipients, attachments, embedded material and validity (`dt`) per VAF §5.3 and §7.
 - For purpose 11 the service is the verifier (VAF §8.3) of the credential carried by the grant being admitted, and MUST complete the credential trust checks of VAF §8.2 before issuing the Ticket.
 - For purpose 15 the original MUST be an `exn` whose `r` is `/challenge/response`, whose `i` is the slot's AID, whose `rp` is the AID of the party that issued the challenge, whose `p` is empty, whose `e` is empty or absent, and whose `a` is exactly `{"words": [...]}` with 12 or 24 words of the BIP-39 English word list. The words reach the employee out of band, so the service cannot check where they came from: its approval establishes only that the employee answers this recipient now. The service SHOULD refuse a second Ticket for the same recipient and words once a response with them has been signed.
+- For purpose 6 the original MUST be an `exn` whose `r` is `/multisig/icp`, `/multisig/ixn`, `/multisig/rot`, `/multisig/exn` or `/multisig/rpy`, whose `i` is the slot's AID, whose embedded event or message is byte for byte an original for which the service has archived this slot's member signature (§7.16, or §7.9 for purposes 20 and 21), and whose recipients are members of the group in its accepted key state.
+- For purposes 20 and 21 the service applies VCAP §12.8 item 7.6: for purpose 20 the original is an `exn` whose `i` is a group AID of which the slot is a member, and for purpose 21 an `rpy` for such a group AID. It checks the route and content as for the corresponding single-signer purpose (for example purpose 10 for an IPEX `grant`).
 - **Idempotency:** a repeated request with identical bytes returns the same result.
 
 ### 7.6 `kel-archive` (required)
@@ -300,6 +304,7 @@ Submits a signed EXN or RPY message for delivery or execution.
 - Repeating the identical request returns the current state of the same operation; this is also how the platform reads the outcome of an `IN_DOUBT` operation if the service does not offer §7.10.
 - `receiver` MUST equal the value returned by `message-ticket` (§7.5); the service rejects any other value, so a redirection of the platform becomes visible.
 - The service MUST archive the signature before any delivery side effect, and MUST deliver the **same** signed message on every retry. An `IN_DOUBT` operation is never resolved by a new signature.
+- For purposes 20 and 21 the Signed is one member signature: the service archives it and delivers the message to `receiver` only once member signatures meeting the group's thresholds are collected; until then the operation is `QUEUED`.
 
 ### 7.10 `operation-status` (optional)
 
@@ -326,9 +331,9 @@ Returns the material the platform needs to approve Agent delegation (VCAP §12.5
 - **Request:** scope + `5: clientAid_t44`.
 - **Result:** `[clientIcp_bstr, agentDip_bstr, [*agentSignature_tstr]]`.
 
-### 7.13 `aid-status`, `reset-reason` and `reset-report` (optional)
+### 7.13 `aid-status` (required), `reset-reason` and `reset-report` (optional)
 
-- `aid-status`: scope + `5: aid_t44` → `active_bool`. Lets a platform stop using an AID the enterprise has deactivated (VCAP §12.7).
+- `aid-status`: scope + `5: aid_t44` → `active_bool`. Lets a platform stop using an AID the enterprise has deactivated (VCAP §12.7, VAF §6.5 item 3).
 - `reset-reason`: scope → `[state_tstr, reason_bstr] / null`. Tells the platform why the enterprise requires a Reset, if it does.
 - `reset-report`: `{1:device_b32, 2:bindingProof}` (no scope) → `[state_tstr, resetEpoch / null]`, where `state` is `"recorded"` (a Reset was recorded now), `"known"` (the Reset was already on record), `"pending-enrollment"` (recorded, and IT has not yet enrolled the device again) or `"none"` (the BindingProof shows the binding on record, so it shows no Reset); `resetEpoch` is the epoch the BindingProof reports, or null when it shows STOCK_UNBOUND. Reports a Reset per §9.5. A BindingProof that does not verify under the attestation key of a device this enterprise enrolled is `403`. A BindingProof with this enterprise's tenant and root and an epoch lower than the record is `409`, because an epoch never decreases. The service MUST be idempotent per (device, recorded resetEpoch), the epoch whose end the report records.
 
@@ -341,13 +346,43 @@ Returns the archived original of a non-KEL message and, if archived, its device 
 
 ---
 
+### 7.15 `group-ticket` (conditionally required: if the service offers purposes 7 or 16–18)
+
+Requests a Ticket for a member signature on a group AID event (VCAP kinds 7 and 8, §12.10).
+
+- **Request:** scope + `5: StateProof / null`, `6: purpose`, `7: original_bstr`.
+- **Result:** `Ticket_bstr`.
+- `purpose` is 16, 17 or 18 (kind GROUP) or 7 (kind GROUP_SUPERSEDE), and the original is a group `icp`, `ixn` or `rot` respectively (for purpose 7, `ixn` or `rot`, or `icp` to reuse the record of an abandoned inception, VCAP §8.4.4 item 6).
+- A StateProof in key 5 MUST have been obtained with a challenge from §7.2 and with the event's `i` as group AID (VCAP §7.4.2), so that it carries the slot's group record. A null key 5 selects the service's archived group record for the slot and its own record of the group's accepted key state. For purpose 7, and for any request at a (group AID, `s`) the service has recorded as abandoned, key 5 MUST be present, because only the device knows for certain whether its record holds the abandoned event; with a null key 5 the service returns `409` with error code 7.
+- The service MUST perform VCAP §12.8 item 7 in full before signing. In particular it approves at most one original per (group AID, `s`) across all members it serves, and for purpose 7 it signs only under a role key that holds capability bit 15 and only after recording a determination on the grounds of VCAP §12.8 item 7.5.
+- **Idempotency:** a repeated request with identical bytes returns the same Ticket. A different original for a (group AID, `s`) that already has an approved original returns `409` with error code 9, except for one replacement (VCAP §12.8 items 7.3 and 7.5): once the service has recorded that the approved original was abandoned, the first different original it approves for that (group AID, `s`) becomes the approved original for every member it serves. A member whose group record holds the abandoned event requests it under purpose 7; any other member, including when no member signed the abandoned event, requests it under purpose 17 or 18. Any further different original for that (group AID, `s`) returns `409` with error code 9, and so does a second purpose 7 request for the same (scope, groupAid, `s`), matching the authenticator, which replaces at most once per sequence number (VCAP §8.4.4 item 6).
+
+### 7.16 `group-archive` (conditionally required: if the service offers purposes 7 or 16–18)
+
+Archives the device result of a member signature on a group event.
+
+- **Request:** scope + `5: groupAid_t44`, `6: sequence`, `7: Signed`.
+- **Result:** `null`.
+- The service MUST verify `Signed` against the archived original and the slot's current key, check that `signCounter` matches an issued Ticket, and store the signature and update its copy of the slot's group record in one transaction. The service does not itself deliver the signature to the other members; the platform does so with the coordination `exn` below.
+- The archive entry is keyed by (scope, groupAid, sequence, `Signed.originalDigest`); the original it belongs to is the one whose Ticket carries that digest. A Signed for a (scope, groupAid, sequence) without an archived entry is archived. Otherwise the service processes a request as follows:
+  1. The same Signed as an archived entry: success, with no further effect (retry).
+  2. A different Signed with the same key as an archived entry: `400`. The authenticator never signs the same group event twice (VCAP §8.4.4 items 5–6).
+  3. A Signed for an original approved under purpose 7 as the replacement at this (scope, groupAid, sequence), whose `signCounter` matches that replacement Ticket: archived as the replacement. An earlier entry at the same sequence stays archived and is marked superseded; the platform sends only the replacement in a coordination `exn`. This also applies when the earlier signature was never archived.
+  4. Any other Signed for a (scope, groupAid, sequence) that already has an archived entry: `400`.
+- The coordination `exn` (`/multisig/icp`, `/multisig/ixn` or `/multisig/rot`) that carries the signature to the other members is a separate signature under purpose 6 (§7.5), delivered with `gateway-submit`.
+
+### 7.17 `group-original` and `group-status` (conditionally required: if the service offers purposes 7 or 16–18)
+
+- `group-original`: scope + `5: groupAid_t44`, `6: said_t44`, `7: originalDigest_b32` → `[original_bstr, Signed_bstr / null]`; `404` if not retained.
+- `group-status`: as `group-original` → `[state_tstr, thresholdMet_bool, networkAccepted_bool, replacementSaid_t44 / null]`. `state` is `"pending"`, `"threshold-met"`, `"accepted"` or `"abandoned"`. `thresholdMet` is true once the service holds member signatures that satisfy the event's current threshold and, for `rot`, the prior next threshold. `networkAccepted` follows §7.8. `"abandoned"` means the service has recorded a determination under VCAP §12.8 item 7.5 for this event; `replacementSaid` is then the SAID of the approved replacement once one is agreed, and null before.
+
 ## 8. WebAuthn Route Operations (Provisional)
 
 **This section is provisional and non-normative in 1.0.** The VCAP WebAuthn route is an optional authenticator feature (VCAP §2.1, §7.14) which is provisional (VCAP §7.14); a change there may change this section. An Enterprise Service MAY implement this section; conformance to 1.0 does not require it.
 
 Results that carry WebAuthn options are CBOR maps whose keys are the WebAuthn member names as text strings, an exception to §5.1 item 2, so that a page can pass them to the WebAuthn API after conversion.
 
-These operations support VCAP §12.9. The page is served from an RP ID in `webauthnRpIds`; the enterprise service is the Outbox on this route (VAF §8.1).
+These operations support VCAP §12.9. The page is served from an RP ID in `webauthnRpIds`; the enterprise service is the Outbox on this route (VAF §8.1). Group member signing uses the native route only in 1.0: these operations issue and archive no group Tickets (purposes 7, 16–18 and 20).
 
 ### 8.1 `webauthn-create-options`
 
@@ -415,10 +450,12 @@ As VCAP §12.2, with steps 0, 1 and 7 implemented by `challenge`, `kel-ticket` /
 | Sign response lost (non-KEL) | GetState; if counter advanced and no later signature: `message-original` (if Outbox lost) → Recover → `gateway-submit` |
 | `kel-archive` / `gateway-submit` returned 5xx | Repeat with the same Signed |
 | `gateway-submit` returned `IN_DOUBT` | Repeat the identical `gateway-submit` (or `operation-status`) with backoff; never re-sign |
+| Sign response lost (group event) | GetState with the group AID; if the record holds the event: `group-original` (if Outbox lost) → Recover → `group-archive` |
+| Sign response lost (GROUP_EXN) | As non-KEL |
 
 ### 9.4 Rotation (VCAP §12.6)
 
-PrepareRotation → `kel-ticket` (purpose 5) with the returned StateProof → Sign(ROT) → `kel-archive` → `kel-status`.
+PrepareRotation → `kel-ticket` (purpose 5) with the returned StateProof → Sign(ROT) → `kel-archive` → `kel-status`. For a slot that holds group records, the rotation changes the slot's share in each group (VCAP §12.10 item 3), and `kel-ticket` may return `409` with error code 11 (§7.3).
 
 ### 9.5 Reset (VCAP §12.7)
 
@@ -432,6 +469,18 @@ When the platform finds a device it used before in STOCK_UNBOUND, ENTERPRISE_BOU
 
 The platform MUST NOT guess or increment a reset epoch itself.
 
+### 9.6 Group Participation (VCAP §12.10)
+
+1. The platform reads the group request and the members' key states, for example through `agent-session` under the profile `"vaf-group"` (Appendix C.3), and builds or receives the exact group event bytes.
+2. For a group `rot` in which the member rotates its share: PrepareRotation → `kel-ticket` (purpose 5) → Sign(ROT) → `kel-archive`, and wait for `kel-status` network acceptance of the member's own rotation.
+3. `group-ticket` (purpose 16, 17 or 18) → Sign(GROUP) → `group-archive`.
+4. Build the `/multisig/*` `exn` carrying the event and the indexed signature; `message-ticket` (purpose 6) → Sign(EXN) → `gateway-submit`.
+5. Read `group-status` until `thresholdMet` and `networkAccepted`; the platform reports these stages separately from "member signed".
+6. If `group-status` reports `"abandoned"` with a `replacementSaid`, obtain the replacement's bytes and repeat steps 3–4 for it, with purpose 7 and a StateProof carrying the group record when the slot's group record holds the abandoned event. A slot replaces at most once per sequence number (VCAP §8.4.4), so the service SHOULD have all members agree on a replacement's bytes before it issues the first replacement Ticket.
+7. To sign a message of the group, for example an IPEX `grant` of a credential the group issues or `/end/role/add` for the group AID: `message-ticket` (purpose 20 or 21) → Sign(GROUP_EXN or RPY) → `gateway-submit`; then send the signature to the other members in a `/multisig/exn` or `/multisig/rpy` `exn` under purpose 6 (steps 4–5).
+
+Steps 3 and 4 run in one context: one PIN entry and two touches. Lost responses are reconciled per §9.3, using `group-original` and a StateProof requested with the group AID in place of `kel-original` and a plain StateProof.
+
 ---
 
 ## 10. Enterprise Service Requirements
@@ -443,7 +492,7 @@ The platform MUST NOT guess or increment a reset epoch itself.
 
 ### 10.2 Idempotency and Unknown Outcomes
 
-1. Every write is keyed by a stable identifier: (scope, sequence) for KEL, `ticketId` (§3) for non-KEL, `requestId` for Agent writes.
+1. Every write is keyed by a stable identifier: (scope, sequence) for KEL; for group events (scope, groupAid, sequence) for `group-ticket`, with the single replacement of §7.15, and (scope, groupAid, sequence, originalDigest) for `group-archive` (§7.16); `ticketId` (§3) for non-KEL; `requestId` for Agent writes.
 2. A repeated identical request MUST return the stored outcome. A request that conflicts with a stored one MUST be refused.
 3. When the outcome of a Ticket signature, an agent call or a delivery is unknown, the service MUST record `IN_DOUBT`, reconcile read-only, and MUST NOT re-dispatch the effect or ask the platform for a new device signature.
 
@@ -486,10 +535,14 @@ The original and its Signed result MUST be stored durably before the service rep
 | operation-status | optional | 5 operationId | [state, result, businessAuthorized] |
 | agent-session | conditionally required (purposes 1, 2) | 5 walletProfile, 6–12 | Agent response |
 | agent-material | conditionally required (purposes 1, 2) | 5 clientAid | [clientIcp, agentDip, agentSigs] |
-| aid-status | optional | 5 aid | active |
+| aid-status | required | 5 aid | active |
 | reset-reason | optional | — | [state, reason] / null |
 | reset-report | optional | (1:device, 2:BindingProof only) | [state, resetEpoch] |
 | message-original | optional | 5 ticketId | [original, Signed?] |
+| group-ticket | conditionally required (purposes 7, 16–18) | 5 StateProof?, 6 purpose, 7 original | Ticket |
+| group-archive | conditionally required (purposes 7, 16–18) | 5 groupAid, 6 sequence, 7 Signed | null |
+| group-original | conditionally required (purposes 7, 16–18) | 5 groupAid, 6 said, 7 originalDigest | [original, Signed?] |
+| group-status | conditionally required (purposes 7, 16–18) | 5 groupAid, 6 said, 7 originalDigest | [state, thresholdMet, networkAccepted, replacementSaid?] |
 | webauthn-* | provisional | Section 8 | Section 8 |
 
 ## Appendix B Purpose Registry
@@ -501,18 +554,25 @@ The original and its Signed result MUST be stored durably before the service rep
 | 3 | WORK inception | WORK | ICP | 8 |
 | 4 | WORK interaction (seal anchoring) | WORK | IXN | 9 |
 | 5 | WORK rotation | WORK | ROT | 10 |
+| 6 | Group coordination (`/multisig/icp`, `/multisig/ixn`, `/multisig/rot`, `/multisig/exn`, `/multisig/rpy` EXN carrying the member's signature, §9.6) | WORK | EXN | 11 |
+| 7 | Group event replacement (§9.6 step 6) | WORK | GROUP_SUPERSEDE | 15 |
 | 10 | IPEX grant | WORK | EXN | 11 |
 | 11 | IPEX admit | WORK | EXN | 11 |
 | 12 | IPEX offer | WORK | EXN | 11 |
 | 13 | Remote-signing response (EXN sent on behalf of the WORK AID at a peer's request) | WORK | EXN | 11 |
 | 14 | Agent end-role (`/end/role/add`) | WORK | RPY | 12 |
 | 15 | Challenge response (`/challenge/response` EXN answering a peer's identity challenge, §7.5) | WORK | EXN | 11 |
+| 16 | Group inception (member signature on a group `icp`) | WORK | GROUP | 14 |
+| 17 | Group interaction (member signature on a group `ixn`) | WORK | GROUP | 14 |
+| 18 | Group rotation (member signature on a group `rot`) | WORK | GROUP | 14 |
+| 20 | Group message (member signature on an `exn` of a group AID, for example an IPEX `grant`, §9.6 step 7) | WORK | GROUP_EXN | 16 |
+| 21 | Group reply (member signature on an `rpy` of a group AID, for example `/end/role/add`, §9.6 step 7) | WORK | RPY | 12 |
 
 Ranges:
 
 | Range | Use |
 |---|---|
-| 1..127 | Assigned by this document. Values 6–9 and 16–18 are unassigned; 19 is reserved and MUST NOT be assigned; 20–127 are reserved |
+| 1..127 | Assigned by this document. Values 8 and 9 are unassigned; 19 is reserved and MUST NOT be assigned; 22–127 are reserved. Purposes 6, 7, 16–18, 20 and 21 serve group AIDs; 7, 16–18 and 20 need an authenticator with group member signing for kinds 7, 8 and 9 (VCAP §2.1) |
 | 128..65535 | Enterprise-defined. An enterprise MUST map each such value to exactly one (owner, kind) pair of VCAP Appendix B, and a platform MUST NOT assume interoperability for them |
 
 A purpose determines the capability bit the service checks and the role key it selects (§10.3 item 1); it is not sent to the authenticator. The route, recipients and embedded material of an EXN are checked by the service against the purpose.
@@ -566,6 +626,17 @@ GET `/challenges` returns words for the employee to give to a peer. POST `/chall
 ### C.2 Registering a Profile
 
 A new profile is added to this appendix with a new name. Its entry lists every (method, path, query, header, body) form it allows, in the format of C.1. Changing an existing profile's list requires a new name.
+
+### C.3 Profile `"vaf-group"`
+
+The requests of profile `"vaf"` (C.1), and in addition the following reads, which a member uses to learn a pending group request and the group's members (KERIA multisig endpoints):
+
+| Method | Path | Allowed query parameters |
+|---|---|---|
+| GET | `/multisig/request/{said}` | — |
+| GET | `/identifiers/{name}/members` | — |
+
+The profile adds no write. Group inception, joining, every group event and every group message need a member signature and a Ticket (§§ 7.5, 7.15); the enterprise service registers the group with the employee's Agent after `group-archive`.
 
 ## Appendix D References
 
