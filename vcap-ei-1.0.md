@@ -136,6 +136,7 @@ Platform                                 Enterprise service
 | HTTP | Meaning | Platform action |
 |---|---|---|
 | 200 | Success; body is the operation result | Continue |
+| 202 | A Ticket request awaits an enterprise review; carries `Retry-After` | Keep the Outbox entry; repeat the **same** request after the indicated time; never obtain a new signature |
 | 400 | Malformed request, invalid device evidence, or policy rejection of content | Do not retry the same request |
 | 401 | Missing or invalid bearer token (`WWW-Authenticate: Bearer`) | Re-authenticate the employee |
 | 403 | The principal is not authorized for this operation, asset or slot now | Stop; show the user |
@@ -148,8 +149,10 @@ Platform                                 Enterprise service
 Every response other than 200 carries an error body:
 
 ```
-error = {1: code, ? 2: detail_tstr}
+error = {1: code, ? 2: detail_tstr, ? 3: reviewId_bstr, ? 4: rule_tstr}
 ```
+
+`reviewId` (16 bytes) identifies a pending review and is present exactly with code 12. `rule` names the enterprise rule that produced code 3 or 12; it MAY be shown to the user. A rule that is enterprise discretion (VAF §5.3) SHOULD be identified as such in `detail`.
 
 `detail` is informative text for logs and MUST NOT be used for decisions. Platforms decide on the HTTP status and `code`:
 
@@ -166,6 +169,9 @@ error = {1: code, ? 2: detail_tstr}
 | 9 | 409 | Conflicts with a stored request (different original, challenge reuse) | Reconcile (§9.3) |
 | 10 | 429 / 5xx | Temporary failure | Repeat the same request |
 | 11 | 409 | The request needs group coordination first: a WORK rotation that would leave the slot outside a group's next-key commitment (VCAP §12.8 item 7.7) | Complete the pending group rotation, then repeat |
+| 12 | 202 | The request is retained and awaits an enterprise review | Repeat the same request after `Retry-After` |
+
+Only `kel-ticket`, `kel-ticket-retry`, `message-ticket` and `group-ticket` return code 12. While the review is pending, a repeated request with identical bytes returns code 12 with the same `reviewId`; after approval it returns the Ticket; after rejection it returns code 3. The service retains the request from the first code 12 response, so the review covers exactly those bytes; a request with different bytes is a new request.
 
 VCAP §2 (error precedence unspecified) applies equally here.
 
@@ -502,6 +508,7 @@ The service MUST meet VCAP §12.8 and VAF §5.3 and §8.2. In addition:
 
 1. It MUST select the role key itself from TrustConfig by the purpose's capability bit (Appendix B); the request carries no key choice.
 2. It MAY apply an enterprise-side issuance window to unused Tickets (for example refusing to deliver a stored Ticket after a time). Such a window is enterprise policy; the authenticator enforces the signature counter (VCAP §13.2 item 2).
+3. It MUST record, for each Ticket decision, the rule that decided it, and for a reviewed request the reviewer. A reviewer MUST NOT be the principal that made the request.
 
 ### 10.4 Archive
 
