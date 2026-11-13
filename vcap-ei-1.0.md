@@ -1,6 +1,6 @@
 # VCAP Enterprise Interface (VCAP-EI) 1.0
 
-*Candidate Specification — 11 November 2026*
+*Candidate Specification — 13 November 2026*
 
 **Specification identifier:** VCAP-EI-1.0  
 **URL:** https://vlei-auth.github.io/vcap-ei/  
@@ -194,7 +194,7 @@ missing = [+ ("oobi" / "endpoint-auth" / "schema" / "credential-chain" / "tel" /
 | 12 | 202 | The request is retained and awaits an enterprise review | Repeat the same request after `Retry-After` |
 | 13 | 409 | Material needed to validate or deliver the message is missing (§7.18) | Show `missing`; supply it or wait, then repeat the same request |
 
-Only `kel-ticket`, `kel-ticket-retry`, `message-ticket` and `group-ticket` return code 12. While the review is pending, a repeated request with identical bytes returns code 12 with the same `reviewId`; after approval it returns the Ticket; after rejection it returns code 3. The service retains the request from the first code 12 response, so the review covers exactly those bytes; a request with different bytes is a new request. The service signs the Ticket when the review approves the request (§9.3 item 4), so the platform can wait for the review without the authenticator.
+Only `kel-ticket`, `kel-ticket-retry`, `message-ticket` and `group-ticket` return code 12. While the review is pending, a repeated request with identical bytes returns code 12 with the same `reviewId`; after approval it returns the Ticket; after rejection it returns code 3. The service retains the request from the first code 12 response, so the review covers exactly those bytes; a request with different bytes is a new request, and so is a request with identical bytes after the user withdrew the review (§7.19). The service signs the Ticket when the review approves the request (§9.3 item 4), so the platform can wait for the review without the authenticator.
 
 `gateway-submit` and `kel-archive` never return a 4xx status because an approval, a review or a Ticket window has expired: a verifiable result is archived and its dispatch is reported as an operation state (§6.3).
 
@@ -318,7 +318,8 @@ Requests a Ticket for EXN or RPY.
 - For purpose 12 the original MUST be an `exn` whose `r` is `/challenge/response`, whose `i` is the slot's AID, whose `rp` is the AID of the party that issued the challenge, whose `p` is empty, whose `e` is empty or absent, and whose `a` is exactly `{"words": [...]}` with 12 or 24 words of the BIP-39 English word list. The words reach the employee out of band, so the service cannot check where they came from: its approval establishes only that the employee answers this recipient now. The service SHOULD refuse a second Ticket for the same recipient and words once a response with them has been signed.
 - For purpose 6 the original MUST be an `exn` whose `r` is `/multisig/icp`, `/multisig/ixn`, `/multisig/rot`, `/multisig/exn` or `/multisig/rpy`, whose `i` is the slot's AID, whose embedded event or message is byte for byte an original for which the service has archived this slot's member signature (§7.16, or §7.9 for purposes 16 and 17), and whose recipients are members of the group in its accepted key state.
 - For purposes 16 and 17 the service applies VCAP §12.8 item 7.6: for purpose 16 the original is an `exn` whose `i` is a group AID of which the slot is a member, and for purpose 17 an `rpy` for such a group AID. It checks the route and content as for the corresponding single-signer purpose (for example purpose 8 for an IPEX `grant`).
-- **Idempotency:** a repeated request with identical bytes returns the same result.
+- The service MUST NOT refuse a Ticket only because the slot has another unused Ticket or a request under review. Several unused Tickets MAY carry the same `signCounter` (VCAP §12.8 item 4); the authenticator signs with at most one of them. The service refuses with code 8 only while a non-KEL signature on the slot may exist without being archived (§8.2), or while an operation that §9.7 requires to finish first is pending.
+- **Idempotency:** a repeated request with identical bytes returns the same result, with one exception. If the slot's signature counter has reached the stored Ticket's `signCounter` through a different original whose Signed the service has archived, and no Signed is archived for the stored Ticket, the stored Ticket can no longer be used (the authenticator answers `TICKET_INVALID`). The service then issues a new Ticket for the same original at the current counter and returns it. A Ticket issued after a review is reissued under the same approval, after the rechecks of §9.3 item 4; any other Ticket is decided again by rule as a new request. The new Ticket's window (§9.3 item 2) starts when it is signed, and the service records it as superseding the earlier one (§9.3 item 5). If the service cannot show from archived signatures that another original consumed the counter, it does not reissue and answers code 8; the platform reconciles per §8.3.
 
 ### 7.6 `kel-archive` (required)
 
@@ -450,8 +451,9 @@ Establishes, before any review or Ticket, that the service has the material it n
 
 Terminates the operation of a non-KEL Ticket that cannot or will not be completed, keeping its record.
 
-- **Request:** scope + `5: ticketId_b16`, `6: reason_tstr`, `7: StateProof / null`.
+- **Request:** scope + `5: ticketId_b16 / null`, `6: reason_tstr`, `7: StateProof / null`, `? 8: reviewId_b16`. Exactly one of key 5 and key 8 identifies the operation.
 - **Result:** `[state, reason_tstr]`.
+- With key 8 the platform withdraws a request it is waiting on under review (code 12, §5.2). The reason MUST be `user-abandoned` and key 7 null, and only the principal that made the request may withdraw it. If the review is still pending, the service records the withdrawal, issues no Ticket for it and answers `[CANCELLED, user-abandoned]`. If the review has already approved the request, the service closes the Ticket it issued as for key 5 with `user-abandoned`. If the review has rejected it, the service answers `[CANCELLED, review-rejected]`.
 - The platform MAY give only the reasons `user-abandoned`, `not-signed` and `signed-unrecovered`; the service accepts each only in this situation:
   - `user-abandoned`: either the Signed is archived and the operation is `HELD` or `QUEUED` with no delivery attempt, or no Signed is archived; key 7 is null. In the second case the service does not yet know whether the Ticket was used, so it leaves the signature counter it relies on unchanged until a later archive or StateProof shows the outcome (§9.6). This lets a user give up without the authenticator.
   - `not-signed`: no Signed is archived, and key 7 is a StateProof, obtained with a challenge from §7.2, whose slot `signCounter` is lower than the Ticket's.
@@ -492,6 +494,8 @@ A platform MUST NOT request a Ticket for a slot while a non-KEL signature it obt
 | Sign response lost (non-KEL) | GetState; if counter advanced and no later signature: `message-original` (if Outbox lost) → Recover → `gateway-submit` |
 | Sign response lost, counter not advanced | Nothing was signed. After the user confirms, Sign again with the same Ticket and original; never automatically. If the service no longer delivers the Ticket, repeat the identical `message-ticket` |
 | Signature committed but neither in the Outbox, nor recoverable, nor archived | `message-close` with `signed-unrecovered` and a fresh StateProof |
+| Request under review (code 12) and the user gives up | `message-close` with key 8 `reviewId` and `user-abandoned` |
+| Sign returned `TICKET_INVALID` because another message was signed on the slot first | Repeat the identical `message-ticket`; the service issues a new Ticket for the same original (§7.5) |
 | Ticket obtained but the user gives up before signing | `message-close` with `user-abandoned`; with the authenticator at hand, preferably `not-signed` with a fresh StateProof, which also settles the counter |
 | `kel-archive` / `gateway-submit` returned 5xx or no response | Repeat with the same Signed; an expired approval or window does not prevent archiving |
 | `gateway-submit` returned `HELD` | Wait and read `operation-status`; never re-sign. If the user gives up: `message-close` with `user-abandoned` |
@@ -552,7 +556,7 @@ The service MUST meet VCAP §12.8 and VAF §5.3 and §8.2. In addition:
 1. It MUST select the role key itself from TrustConfig by the purpose's capability bit (Appendix B); the request carries no key choice.
 2. It MAY apply an enterprise-side window to unused Tickets (for example refusing to deliver a stored Ticket after a time). Such a window is enterprise policy; the authenticator enforces the signature counter (VCAP §13.2 item 2). The window starts when the Ticket is signed, MUST NOT be shortened by the remaining lifetime of an approval or review, and MUST NOT be used to refuse archiving (§9.4). Its length MAY differ per rule, for example minutes for automatically allowed requests and hours for reviewed ones.
 3. It MUST record, for each Ticket decision, the rule that decided it, and for a reviewed request the reviewer. A reviewer MUST NOT be the principal that made the request.
-4. When a review approves a request (code 12), the service signs the Ticket at that time and returns it on the next identical request. Before returning a stored Ticket it rechecks only facts that can revoke it: the principal's authority, the device's reset epoch, the AID, the status of each credential involved, and the message age of §9.5 item 5. If one fails, it does not return the Ticket and answers with code 3 or 4. The approval does not otherwise expire while its Ticket is unused within the window of item 2. The state basis of such a Ticket is the one retained with the request (§5.2) or, if newer, the service's archived head and counter; if the slot has signed since, the authenticator rejects the Ticket (`TICKET_INVALID`) without a signature and the platform reconciles per VCAP §12.2.
+4. When a review approves a request (code 12), the service signs the Ticket at that time and returns it on the next identical request. Before returning a stored Ticket it rechecks only facts that can revoke it: the principal's authority, the device's reset epoch, the AID, the status of each credential involved, and the message age of §9.5 item 5. If one fails, it does not return the Ticket and answers with code 3 or 4. The approval does not otherwise expire while its Ticket is unused within the window of item 2. The state basis of such a Ticket is the one retained with the request (§5.2) or, if newer, the service's archived head and counter; if the slot has signed since, the authenticator rejects the Ticket (`TICKET_INVALID`) without a signature, and the platform repeats the identical request to obtain a reissued Ticket (§7.5).
 5. Decisions are append-only. A later decision about the same original or signed message adds a record that names the one it supersedes; it never overwrites an earlier one, and a Ticket stays bound to the decision under which it was issued.
 
 ### 9.4 Archive
@@ -635,7 +639,7 @@ No event removes an archived result, and no event rolls back a delivery that has
 | gateway-submit | required | 5 purpose, 6 original, 7 ticketId, 8 Signed, 9 receiver | [operationId, state, result] |
 | operation-status | required | 5 operationId | [state, result, businessAuthorized, detail] |
 | message-prepare | required for purposes 8–10 if offered | 5 purpose, 6 original | [ready, missing] |
-| message-close | required | 5 ticketId, 6 reason, 7 StateProof? | [state, reason] |
+| message-close | required | 5 ticketId / null, 6 reason, 7 StateProof?, 8 reviewId? | [state, reason] |
 | agent-session | conditionally required (purposes 1, 2) | 5 walletProfile, 6–12 | Agent response |
 | agent-material | conditionally required (purposes 1, 2) | 5 clientAid | [clientIcp, agentDip, agentSigs] |
 | aid-status | required | 5 aid | active |
@@ -783,3 +787,4 @@ This document follows these rules from the Candidate onward:
 **Change log.**
 
 - **11 November 2026.** Candidate Specification; first published version.
+- **13 November 2026.** Candidate revision from implementation review. §7.5: a service does not refuse a Ticket because of another unused Ticket or pending review on the slot, and a repeated `message-ticket` reissues a Ticket whose counter another archived original consumed. §7.19: `message-close` key 8 withdraws a request under review. §5.2, §8.3, §9.3 item 4 and Appendix A follow.
