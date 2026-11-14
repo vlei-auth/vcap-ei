@@ -18,7 +18,7 @@
 
 ## Status of this document
 
-This is a **Candidate Specification** of VCAP-EI 1.0, dated 11 November 2026. Its features are frozen: until it becomes final it changes only to correct errors, remove ambiguity, or resolve findings of the review below, and every such change is listed in the change log. It becomes the final 1.0 when (1) at least one Enterprise Service and one Platform, written independently of each other's code, pass the VAF conformance tests including VAF BASE-T15–T20 on real authenticators; (2) an implementation written only from these documents reproduces the test vectors of VCAP Appendix E and completes a signature and its archiving; and (3) an independent security review of VCAP, VCAP-EI and VAF has been completed and its findings resolved. Comments and errata are submitted as issues at <https://github.com/vlei-auth/vcap-ei/issues>.
+This is a **Candidate Specification** of VCAP-EI 1.0, dated 14 November 2026. Its features are frozen: until it becomes final it changes only to correct errors, remove ambiguity, or resolve findings of the review below, and every such change is listed in the change log. It becomes the final 1.0 when (1) at least one Enterprise Service and one Platform, written independently of each other's code, pass the VAF conformance tests including VAF BASE-T15–T20 on real authenticators; (2) an implementation written only from these documents reproduces the test vectors of VCAP Appendix E and completes a signature and its archiving; and (3) an independent security review of VCAP, VCAP-EI and VAF has been completed and its findings resolved. Comments and errata are submitted as issues at <https://github.com/vlei-auth/vcap-ei/issues>.
 
 ## License and Intellectual Property
 
@@ -184,7 +184,7 @@ missing = [+ ("oobi" / "endpoint-auth" / "schema" / "credential-chain" / "tel" /
 | 2 | 400 | Device evidence invalid (StateProof, Signed or challenge) | Obtain new evidence; do not repeat unchanged |
 | 3 | 400 | Content rejected by an enterprise rule. Never used for an expired approval or time window | Show the user; do not repeat |
 | 4 | 403 | Principal not authorized for this operation, asset or slot | Stop; show the user |
-| 5 | 403 | Scope does not match the current enrollment record (§6.1) | Obtain a new StateProof; call `registration` |
+| 5 | 403 | Scope does not match the current enrollment record (§6.1) | Obtain a new StateProof; call `registration` and `config-update` (§7.20) |
 | 6 | 404 | Record not retained | Follow §8.3 |
 | 7 | 409 | StateProof required (§7.3) | `challenge` → GetState → repeat with a StateProof |
 | 8 | 409 | An operation for this request, or one that must finish before it (§9.7), is in progress, held or in doubt | Stop and reconcile (§8.3); never obtain a new signature to get past it |
@@ -225,7 +225,7 @@ Every operation except `registration` begins with the scope keys:
 4: configurationDigest_b32  ; H(TrustConfig envelope) the platform expects
 ```
 
-The enterprise service MUST reject a request whose (device, resetEpoch, configurationDigest) does not match its current record for an asset assigned to the principal, except that `kel-archive`, `gateway-submit` and `group-archive` are accepted for a scope that matched the record when the Ticket was issued, so that results of a retired epoch or a reassigned asset can still be archived (§9.4).
+The enterprise service MUST reject a request whose (device, resetEpoch) does not match its current record for an asset assigned to the principal, or whose configurationDigest is not one the device may have installed: the configuration last confirmed by a verified StateProof or BindingProof, or a later one of the chain the service has signed for that record (VCAP §12.10). The exception is that `kel-archive`, `gateway-submit` and `group-archive` are accepted for a scope that matched the record when the Ticket was issued, so that results of a retired epoch or a reassigned asset can still be archived (§9.4).
 
 ### 6.2 Device Evidence
 
@@ -273,8 +273,9 @@ Each operation lists its request keys after the scope (§6.1) and its result. *R
 
 Returns the enterprise record of a device the principal holds, so the platform can verify StateProofs and build inception events.
 
-- **Request:** `{1:device_b32, 2:resetEpoch}` (no slot, no digest).
+- **Request:** `{1:device_b32, 2:resetEpoch, ? 3:configurationDigest_b32}` (no slot). Key 3 is the configurationDigest of the device's StateProof or BindingProof.
 - **Result:** `[1, device_b32, tenant_b32, resetEpoch, enterpriseRoot_b32, attestationPublic_b32, trustConfig_bstr, clientWitnesses[*aid_t44], clientToad, workWitnesses[*aid_t44], workToad]`.
+- `trustConfig` is the configuration whose digest is key 3, when key 3 names a configuration the service has signed for this record, and otherwise the configuration last confirmed by a verified proof (VCAP §12.10). If key 3 names no configuration of the record, the service returns `403` with error code 5.
 - `clientWitnesses` / `clientToad` and `workWitnesses` / `workToad` are the witness lists and thresholds the enterprise requires in the `b` and `bt` fields of CLIENT and WORK `icp` events.
 
 The platform MUST check that `H(trustConfig)` equals the configurationDigest in the device's StateProof, and that the StateProof verifies under `attestationPublic`, before using any other field.
@@ -461,6 +462,16 @@ Terminates the operation of a non-KEL Ticket that cannot or will not be complete
 - The service sets the state to `CANCELLED`, keeps the original, Ticket, any Signed and every decision about them (§9.6), reconciles the slot's signature counter (§9.6), and from then on issues Tickets for the slot as if the operation had completed.
 - **Idempotency:** a repeated request returns the same result. A request for an operation in `SENDING` or a later state returns `409` with error code 8.
 
+### 7.20 `config-update` (required)
+
+Returns the successor of a device's TrustConfig and records which configuration the device has installed (VCAP §12.10).
+
+- **Request:** scope + `5: StateProof / null`. Scope key 4 is the configurationDigest the device reports.
+- **Result:** `trustConfig_bstr / null`: the configuration the service has signed with `prior` equal to scope key 4, or null when there is none.
+- A StateProof in key 5 MUST answer a challenge issued by `challenge` (§7.2) for this principal and scope; the service verifies it with the enrolled attestation public key, and its configurationDigest MUST equal scope key 4 (otherwise error code 2). The service then records that configuration as installed, which ends the uncertainty of VCAP §12.10 enterprise item 2 up to it.
+- The service returns the successor regardless of the principal's other authority over the asset, since installing it can only apply enterprise policy; it MUST NOT return a configuration of another device, tenant or reset epoch.
+- **Idempotency:** the request has no effect other than the recording above; a repeated request returns the same result until the service signs a further configuration.
+
 ## 8. Procedures
 
 ### 8.1 Onboarding (VCAP §12.5 steps 4–10)
@@ -532,6 +543,15 @@ The platform MUST NOT guess or increment a reset epoch itself.
 
 Steps 3 and 4 run in one context: one PIN entry and two touches. Lost responses are reconciled per §8.3, using `group-original` and a StateProof requested with the group AID in place of `kel-original` and a plain StateProof.
 
+### 8.7 TrustConfig Update (VCAP §12.10)
+
+1. Whenever the platform holds a verified StateProof, and after any `403` with error code 5, it calls `config-update` with the StateProof's configurationDigest in the scope. A platform SHOULD do so at least once per session in which it establishes a context.
+2. If the result is a configuration, the platform tells the employee that the enterprise configuration of the authenticator will change and the identities on it are kept, establishes a context whose token includes MANAGE, and calls UpdateTrustConfig; the employee touches once.
+3. Whatever the outcome, `challenge` → GetState → `config-update` with the StateProof in key 5, which records the installed configuration and returns a further successor, if any; repeat step 2 for it.
+4. `registration` with the new configurationDigest, to use the new `minPinChars` and role set; if forcePINChange is set, ask the employee to change the PIN.
+
+The update takes one PIN entry and one touch per configuration and changes no slot, so no signature, Ticket or archive operation is repeated because of it. An unused Ticket whose role or capability the update withdrew fails with `TICKET_INVALID`; the platform repeats the identical Ticket request, which the service answers under the new configuration.
+
 ---
 
 ## 9. Enterprise Service Requirements
@@ -553,7 +573,7 @@ Steps 3 and 4 run in one context: one PIN entry and two touches. Lost responses 
 
 The service MUST meet VCAP §12.8 and VAF §5.3 and §8.2. In addition:
 
-1. It MUST select the role key itself from TrustConfig by the purpose's capability bit (Appendix B); the request carries no key choice.
+1. It MUST select the role key itself from TrustConfig by the purpose's capability bit (Appendix B); the request carries no key choice. While the device may hold more than one configuration of its chain (VCAP §12.10), it selects only a role key whose keyId, public key and capability bit are the same in every one of them; if there is none, it returns `409` with error code 7 and uses the configurationDigest of the StateProof it then receives.
 2. It MAY apply an enterprise-side window to unused Tickets (for example refusing to deliver a stored Ticket after a time). Such a window is enterprise policy; the authenticator enforces the signature counter (VCAP §13.2 item 2). The window starts when the Ticket is signed, MUST NOT be shortened by the remaining lifetime of an approval or review, and MUST NOT be used to refuse archiving (§9.4). Its length MAY differ per rule, for example minutes for automatically allowed requests and hours for reviewed ones.
 3. It MUST record, for each Ticket decision, the rule that decided it, and for a reviewed request the reviewer. A reviewer MUST NOT be the principal that made the request.
 4. When a review approves a request (code 12), the service signs the Ticket at that time and returns it on the next identical request. Before returning a stored Ticket it rechecks only facts that can revoke it: the principal's authority, the device's reset epoch, the AID, the status of each credential involved, and the message age of §9.5 item 5. If one fails, it does not return the Ticket and answers with code 3 or 4. The approval does not otherwise expire while its Ticket is unused within the window of item 2. The state basis of such a Ticket is the one retained with the request (§5.2) or, if newer, the service's archived head and counter; if the slot has signed since, the authenticator rejects the Ticket (`TICKET_INVALID`) without a signature, and the platform repeats the identical request to obtain a reissued Ticket (§7.5).
@@ -607,6 +627,7 @@ The authenticator still accepts an unused Ticket until the slot's counter advanc
 | Principal's authority revoked | Accepted and marked | Refused; queued operations `HELD` (`authority-revoked`) | Reconciled only | Per VAF §8.4 |
 | Credential involved revoked | Accepted | Refused; queued operations `CANCELLED` (`credential-revoked`) | Reconciled only; the order of revocation and delivery is recorded | Unaffected |
 | Approval withdrawn | Unaffected | Queued operations `HELD` (`review-required`) | Reconciled only | Unaffected |
+| TrustConfig update (VCAP §12.10) | Accepted for every configuration of the chain (§6.1) | Unaffected | Unaffected | Unaffected |
 
 No event removes an archived result, and no event rolls back a delivery that has started.
 
@@ -628,7 +649,7 @@ No event removes an archived result, and no event rolls back a delivery that has
 
 | Operation | Class | Request keys after scope | Result |
 |---|---|---|---|
-| registration | required | (1:device, 2:resetEpoch only) | enrollment record |
+| registration | required | (1:device, 2:resetEpoch, 3:configurationDigest? only) | enrollment record |
 | challenge | required | — | challenge |
 | kel-ticket | required | 5 StateProof?, 6 purpose, 7 original | Ticket |
 | kel-ticket-retry | optional | as kel-ticket, 5 required | Ticket |
@@ -650,6 +671,7 @@ No event removes an archived result, and no event rolls back a delivery that has
 | group-archive | conditionally required (purposes 7, 13–15) | 5 groupAid, 6 sequence, 7 Signed | null |
 | group-original | conditionally required (purposes 7, 13–15) | 5 groupAid, 6 said, 7 originalDigest | [original, Signed?] |
 | group-status | conditionally required (purposes 7, 13–15) | 5 groupAid, 6 said, 7 originalDigest | [state, thresholdMet, networkAccepted, replacementSaid?] |
+| config-update | required | 5 StateProof? | trustConfig / null |
 
 ## Appendix B Purpose Registry
 
@@ -786,5 +808,4 @@ This document follows these rules from the Candidate onward:
 
 **Change log.**
 
-- **11 November 2026.** Candidate Specification; first published version.
-- **13 November 2026.** Candidate revision from implementation review. §7.5: a service does not refuse a Ticket because of another unused Ticket or pending review on the slot, and a repeated `message-ticket` reissues a Ticket whose counter another archived original consumed. §7.19: `message-close` key 8 withdraws a request under review. §5.2, §8.3, §9.3 item 4 and Appendix A follow.
+- **14 November 2026.** Candidate Specification; first published version.
