@@ -414,7 +414,7 @@ Requests a Ticket for a member signature on a group AID event (VCAP kinds 6 and 
 
 - **Request:** scope + `5: StateProof / null`, `6: purpose`, `7: original_bstr`.
 - **Result:** `Ticket_bstr`.
-- `purpose` is 16, 17 or 18 (kind GROUP) or 7 (kind GROUP_SUPERSEDE), and the original is a group `icp`, `ixn` or `rot` respectively (for purpose 7, `ixn` or `rot`, or `icp` to reuse the record of an abandoned inception, VCAP §8.4.4 item 6).
+- `purpose` is 13, 14 or 15 (kind GROUP) or 7 (kind GROUP_SUPERSEDE), and the original is a group `icp`, `ixn` or `rot` respectively (for purpose 7, `ixn` or `rot`, or `icp` to reuse the record of an abandoned inception, VCAP §8.4.4 item 6).
 - A StateProof in key 5 MUST have been obtained with a challenge from §7.2 and with the event's `i` as group AID (VCAP §7.4.2), so that it carries the slot's group record. A null key 5 selects the service's archived group record for the slot and its own record of the group's accepted key state. For purpose 7, and for any request at a (group AID, `s`) the service has recorded as abandoned, key 5 MUST be present, because only the device knows for certain whether its record holds the abandoned event; with a null key 5 the service returns `409` with error code 7. A member whose group record holds an event other than the one the group's witnesses accepted at the same sequence number signs the accepted event under purpose 7 (VCAP §12.8 items 7.2 and 7.5(a)), with key 5 present; the service approves it only when the record's `seq` equals that sequence number and the original is byte for byte the accepted event.
 - The service MUST perform VCAP §12.8 item 7 in full before signing. In particular it approves at most one original per (group AID, `s`) across all members it serves, and for purpose 7 it signs only under a role key that holds capability bit 13 and only after recording a determination on the grounds of VCAP §12.8 item 7.5.
 - **Idempotency:** a repeated request with identical bytes returns the same Ticket. A different original for a (group AID, `s`) that already has an approved original returns `409` with error code 9, except for one replacement (VCAP §12.8 items 7.3 and 7.5): once the service has recorded that the approved original was abandoned, the first different original it approves for that (group AID, `s`) becomes the approved original for every member it serves. A member whose group record holds the abandoned event requests it under purpose 7; any other member, including when no member signed the abandoned event, requests it under purpose 14 or 15. Any further different original for that (group AID, `s`) returns `409` with error code 9, and so does a second purpose 7 request for the same (scope, groupAid, `s`), matching the authenticator, which replaces at most once per sequence number (VCAP §8.4.4 item 6).
@@ -769,12 +769,13 @@ A new profile is added to this appendix with a new name. Its entry lists every (
 
 ### C.3 Profile `"vaf-group"`
 
-The requests of profile `"vaf"` (C.1), and in addition the following reads, which a member uses to learn a pending group request and the group's members (KERIA multisig endpoints):
+The requests of profile `"vaf"` (C.1), and in addition the following reads, which a member uses to learn a pending group request, the group's members and the members' key states (KERIA multisig and key state endpoints):
 
 | Method | Path | Allowed query parameters |
 |---|---|---|
 | GET | `/multisig/request/{said}` | — |
 | GET | `/identifiers/{name}/members` | — |
+| GET | `/states` | `pre`: a 44-character AID, repeated 1..16 times |
 
 The profile adds no write. Group inception, joining, every group event and every group message need a member signature and a Ticket (§§ 7.5, 7.15); the enterprise service registers the group with the employee's Agent after `group-archive`.
 
