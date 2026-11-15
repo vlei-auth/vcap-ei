@@ -1,6 +1,6 @@
 # VCAP Enterprise Interface (VCAP-EI) 1.0
 
-*Candidate Specification — 13 November 2026*
+*Candidate Specification — 15 November 2026*
 
 **Specification identifier:** VCAP-EI-1.0  
 **URL:** https://vlei-auth.github.io/vcap-ei/  
@@ -18,7 +18,7 @@
 
 ## Status of this document
 
-This is a **Candidate Specification** of VCAP-EI 1.0, dated 14 November 2026. Its features are frozen: until it becomes final it changes only to correct errors, remove ambiguity, or resolve findings of the review below, and every such change is listed in the change log. It becomes the final 1.0 when (1) at least one Enterprise Service and one Platform, written independently of each other's code, pass the VAF conformance tests including VAF BASE-T15–T20 on real authenticators; (2) an implementation written only from these documents reproduces the test vectors of VCAP Appendix E and completes a signature and its archiving; and (3) an independent security review of VCAP, VCAP-EI and VAF has been completed and its findings resolved. Comments and errata are submitted as issues at <https://github.com/vlei-auth/vcap-ei/issues>.
+This is a **Candidate Specification** of VCAP-EI 1.0, dated 15 November 2026. Its features are frozen: until it becomes final it changes only to correct errors, remove ambiguity, or resolve findings of the review below, and every such change is listed in the change log. It becomes the final 1.0 when (1) at least one Enterprise Service and one Platform, written independently of each other's code, pass the VAF conformance tests including VAF BASE-T15–T20 on real authenticators; (2) an implementation written only from these documents reproduces the test vectors of VCAP Appendix E and completes a signature and its archiving; and (3) an independent security review of VCAP, VCAP-EI and VAF has been completed and its findings resolved. Comments and errata are submitted as issues at <https://github.com/vlei-auth/vcap-ei/issues>.
 
 ## License and Intellectual Property
 
@@ -138,7 +138,7 @@ Platform                                 Enterprise service
   |-- kel-status / operation-status ------------->|  delivered? peer accepted? network accepted? business authorized?
 ```
 
-The platform needs the authenticator only between receiving the Ticket and archiving. Preparation, review and delivery do not need it, so the platform SHOULD ask the user to connect the authenticator only once a Ticket is available.
+The platform needs the authenticator only between receiving the Ticket and archiving. Preparation, review and delivery do not need it, so the platform SHOULD ask the user to connect the authenticator only once a Ticket is available. Over NFC each signature needs its own tap, and so its own context (VCAP §11.3), except a coordination message whose Ticket is linked to the member signature before it (§7.21).
 
 ---
 
@@ -317,7 +317,7 @@ Requests a Ticket for EXN or RPY.
 - The service MUST verify the route, recipients, attachments, embedded material and validity (`dt`) per VAF §5.3 and §7.
 - For purpose 9 the service is the verifier (VAF §8.3) of the credential carried by the grant being admitted, and MUST complete the credential trust checks of VAF §8.2 before issuing the Ticket.
 - For purpose 12 the original MUST be an `exn` whose `r` is `/challenge/response`, whose `i` is the slot's AID, whose `rp` is the AID of the party that issued the challenge, whose `p` is empty, whose `e` is empty or absent, and whose `a` is exactly `{"words": [...]}` with 12 or 24 words of the BIP-39 English word list. The words reach the employee out of band, so the service cannot check where they came from: its approval establishes only that the employee answers this recipient now. The service SHOULD refuse a second Ticket for the same recipient and words once a response with them has been signed.
-- For purpose 6 the original MUST be an `exn` whose `r` is `/multisig/icp`, `/multisig/ixn`, `/multisig/rot`, `/multisig/exn` or `/multisig/rpy`, whose `i` is the slot's AID, whose embedded event or message is byte for byte an original for which the service has archived this slot's member signature (§7.16, or §7.9 for purposes 16 and 17), and whose recipients are members of the group in its accepted key state.
+- For purpose 6 the original MUST be an `exn` whose `r` is `/multisig/icp`, `/multisig/ixn`, `/multisig/rot`, `/multisig/exn` or `/multisig/rpy`, whose `i` is the slot's AID, whose embedded event or message is byte for byte an original for which the service has archived this slot's member signature (§7.16, or §7.9 for purposes 16 and 17), or for which it issues the member signature's Ticket in the same decision under `group-ticket-pair` (§7.21), and whose recipients are members of the group in its accepted key state.
 - For purposes 16 and 17 the service applies VCAP §12.8 item 7.6: for purpose 16 the original is an `exn` whose `i` is a group AID of which the slot is a member, and for purpose 17 an `rpy` for such a group AID. It checks the route and content as for the corresponding single-signer purpose (for example purpose 8 for an IPEX `grant`).
 - The service MUST NOT refuse a Ticket only because the slot has another unused Ticket or a request under review. Several unused Tickets MAY carry the same `signCounter` (VCAP §12.8 item 4); the authenticator signs with at most one of them. The service refuses with code 8 only while a non-KEL signature on the slot may exist without being archived (§8.2), or while an operation that §9.7 requires to finish first is pending.
 - **Idempotency:** a repeated request with identical bytes returns the same result, with one exception. If the slot's signature counter has reached the stored Ticket's `signCounter` through a different original whose Signed the service has archived, and no Signed is archived for the stored Ticket, the stored Ticket can no longer be used (the authenticator answers `TICKET_INVALID`). The service then issues a new Ticket for the same original at the current counter and returns it. A Ticket issued after a review is reissued under the same approval, after the rechecks of §9.3 item 4; any other Ticket is decided again by rule as a new request. The new Ticket's window (§9.3 item 2) starts when it is signed, and the service records it as superseding the earlier one (§9.3 item 5). If the service cannot show from archived signatures that another original consumed the counter, it does not reissue and answers code 8; the platform reconciles per §8.3.
@@ -472,6 +472,20 @@ Returns the successor of a device's TrustConfig and records which configuration 
 - The service returns the successor regardless of the principal's other authority over the asset, since installing it can only apply enterprise policy; it MUST NOT return a configuration of another device, tenant or reset epoch.
 - **Idempotency:** the request has no effect other than the recording above; a repeated request returns the same result until the service signs a further configuration.
 
+### 7.21 `group-ticket-pair` (conditionally required: if the service offers purposes 7 or 13–17)
+
+Requests, in one decision, the Ticket for a member signature and a linked Ticket (VCAP §9.2) for the coordination `exn` that carries that signature to the other members, so that the authenticator takes one user action for both (VCAP §8.2 step 1, §12.9 items 5 and 6).
+
+- **Request:** scope + `5: StateProof / null`, `6: purpose`, `7: original_bstr`, `8: coordination_bstr`.
+- **Result:** `[Ticket_bstr, receiver_tstr / null, linkedTicket_bstr, coordinationReceiver_tstr]`.
+- `purpose`, `original` and key 5 are as for `group-ticket` (§7.15; purposes 7, 13, 14 and 15; `receiver` is null) or as for `message-ticket` (§7.5; purposes 16 and 17; `receiver` as there). The service decides the member signature exactly as that operation does, including code 12 while a review is pending, code 13, and every check of VCAP §12.8 item 7.
+- `coordination` is the `exn` of purpose 6 (§7.5): route `/multisig/icp`, `/multisig/ixn` or `/multisig/rot` for a group event, `/multisig/exn` or `/multisig/rpy` for purposes 16 and 17; `i` is the slot's AID; its embedded event or message is byte for byte `original`. The service checks it as §7.5 does for purpose 6. It does not contain the member signature: the service adds the indexed signature as a CESR path attachment when it delivers the message, from the Signed it archives for `original` (§9.2 item 5).
+- The service issues both Tickets in one decision or neither. The Ticket for `original` carries the slot's next signature counter `c`; the linked Ticket has kind 4, `signCounter` `c + 1` and `linkedDigest` = H(`original`). Both use role keys selected per §9.3 item 1. A pending review (code 12) covers both, and so does a rejection.
+- **Idempotency:** a repeated request with identical bytes returns the same pair. When the Ticket for `original` is reissued (§7.5, §7.15), the linked Ticket is reissued with it, at the following counter, under the same decision. A request that differs only in `coordination` is a new decision about the coordination message; the member signature's decision is unchanged.
+- **Archiving** is as without a pair: `group-archive` (§7.16), or `gateway-submit` (§7.9) for purposes 16 and 17, for the member signature, then `gateway-submit` with purpose 6 for the coordination `exn`. The service accepts the coordination `exn` only after the member signature it embeds is archived.
+- A linked Ticket is also an ordinary Ticket: when the member signature was made in an earlier context, for example because the response was lost, the platform signs the coordination `exn` later, with its own user action.
+- **Platform.** The platform requests a pair only from an authenticator that implements group member signing (GetInfo `vcapGroup`). It sends the Sign (or upload) of `original` and then that of `coordination` in one context, with no command between them other than GetInfo and status-mode GetState. If the second returns `UP_REQUIRED` (VCAP §10.1), the member signature exists and the platform asks the user for a new tap and signs the coordination `exn` in a new context.
+
 ## 8. Procedures
 
 ### 8.1 Onboarding (VCAP §12.5 steps 4–10)
@@ -506,7 +520,8 @@ A platform MUST NOT request a Ticket for a slot while a non-KEL signature it obt
 | Sign response lost, counter not advanced | Nothing was signed. After the user confirms, Sign again with the same Ticket and original; never automatically. If the service no longer delivers the Ticket, repeat the identical `message-ticket` |
 | Signature committed but neither in the Outbox, nor recoverable, nor archived | `message-close` with `signed-unrecovered` and a fresh StateProof |
 | Request under review (code 12) and the user gives up | `message-close` with key 8 `reviewId` and `user-abandoned` |
-| Sign returned `TICKET_INVALID` because another message was signed on the slot first | Repeat the identical `message-ticket`; the service issues a new Ticket for the same original (§7.5) |
+| Sign returned `TICKET_INVALID` because another message was signed on the slot first | Repeat the identical `message-ticket`; the service issues a new Ticket for the same original (§7.5). The context and token are kept (VCAP §10.2), so the platform signs with the new Ticket without a new PIN entry; over NFC in the same field session |
+| Sign returned `UP_REQUIRED` (NFC) | Nothing was executed. Ask the user to tap again; establish a new context and repeat the Sign with the same Ticket and original. This is not a lost response |
 | Ticket obtained but the user gives up before signing | `message-close` with `user-abandoned`; with the authenticator at hand, preferably `not-signed` with a fresh StateProof, which also settles the counter |
 | `kel-archive` / `gateway-submit` returned 5xx or no response | Repeat with the same Signed; an expired approval or window does not prevent archiving |
 | `gateway-submit` returned `HELD` | Wait and read `operation-status`; never re-sign. If the user gives up: `message-close` with `user-abandoned` |
@@ -541,16 +556,16 @@ The platform MUST NOT guess or increment a reset epoch itself.
 6. If `group-status` reports `"abandoned"` with a `replacementSaid`, obtain the replacement's bytes and repeat steps 3–4 for it, with purpose 7 and a StateProof carrying the group record when the slot's group record holds the abandoned event. A slot replaces at most once per sequence number (VCAP §8.4.4), so the service SHOULD have all members agree on a replacement's bytes before it issues the first replacement Ticket.
 7. To sign a message of the group, for example an IPEX `grant` of a credential the group issues or `/end/role/add` for the group AID: `message-ticket` (purpose 16 or 17) → Sign(GROUP_EXN or RPY) → `gateway-submit`; then send the signature to the other members in a `/multisig/exn` or `/multisig/rpy` `exn` under purpose 6 (steps 4–5).
 
-Steps 3 and 4 run in one context: one PIN entry and two touches. Lost responses are reconciled per §8.3, using `group-original` and a StateProof requested with the group AID in place of `kel-original` and a plain StateProof.
+Over USB, steps 3 and 4 run in one context: one PIN entry and two touches. Over NFC they need two taps and two contexts (VCAP §11.3); the platform MAY hold the PIN for both (VCAP §12.1 item 8). With `group-ticket-pair` (§7.21) the platform builds the coordination `exn` of step 4 before step 3, obtains both Tickets with one request, and signs both in one context with one touch or tap, followed by `group-archive` and `gateway-submit`; the same applies to the group message and its `/multisig/exn` or `/multisig/rpy` of step 7. Lost responses are reconciled per §8.3, using `group-original` and a StateProof requested with the group AID in place of `kel-original` and a plain StateProof.
 
 ### 8.7 TrustConfig Update (VCAP §12.10)
 
-1. Whenever the platform holds a verified StateProof, and after any `403` with error code 5, it calls `config-update` with the StateProof's configurationDigest in the scope. A platform SHOULD do so at least once per session in which it establishes a context.
+1. Whenever the platform holds a verified StateProof, and after any `403` with error code 5, it calls `config-update` with the StateProof's configurationDigest in the scope. A platform SHOULD do so at least once per session in which it establishes a context. It MAY do so before it connects the authenticator, with the configurationDigest of the last StateProof it verified, so that the employee decides about the update before entering the PIN; it then confirms with GetState in the context that the authenticator still reports that digest (VCAP §12.10 platform step 1).
 2. If the result is a configuration, the platform tells the employee that the enterprise configuration of the authenticator will change and the identities on it are kept, establishes a context whose token includes MANAGE, and calls UpdateTrustConfig; the employee touches once.
-3. Whatever the outcome, `challenge` → GetState → `config-update` with the StateProof in key 5, which records the installed configuration and returns a further successor, if any; repeat step 2 for it.
+3. Whatever the outcome, `challenge` → GetState → `config-update` with the StateProof in key 5, which records the installed configuration and returns a further successor, if any; repeat step 2 for it. After a success without forcePINChange the context remains open (VCAP §7.12 step 10) and this step runs in it. The platform MAY instead run it at the start of the next context it establishes, for example that of the next signature; until then the service treats the device as possibly holding either configuration (§9.3 item 1).
 4. `registration` with the new configurationDigest, to use the new `minPinChars` and role set; if forcePINChange is set, ask the employee to change the PIN.
 
-The update takes one PIN entry and one touch per configuration and changes no slot, so no signature, Ticket or archive operation is repeated because of it. An unused Ticket whose role or capability the update withdrew fails with `TICKET_INVALID`; the platform repeats the identical Ticket request, which the service answers under the new configuration.
+The update takes one touch per configuration, over NFC one tap and therefore one context per configuration, and one PIN entry for the chain the employee confirmed (VCAP §12.1 item 8) and changes no slot, so no signature, Ticket or archive operation is repeated because of it. An unused Ticket whose role or capability the update withdrew fails with `TICKET_INVALID`; the platform repeats the identical Ticket request, which the service answers under the new configuration.
 
 ---
 
@@ -567,7 +582,7 @@ The update takes one PIN entry and one touch per configuration and changes no sl
 2. A repeated identical request MUST return the stored outcome. A request that conflicts with a stored one MUST be refused.
 3. When the outcome of a Ticket signature, an agent call or a delivery is unknown, the service MUST record `IN_DOUBT`, reconcile read-only, and MUST NOT ask the platform for a new device signature. It MUST NOT repeat an effect that is not idempotent. It MAY deliver again the **identical signed bytes** of an EXN or RPY to a receiver that discards duplicates by SAID, as KERI receivers do; this is how `IN_DOUBT` delivery is resolved.
 4. Before each delivery attempt the service MUST durably record that the attempt started. An operation with no recorded attempt has certainly not been delivered; only an operation with a recorded attempt and no result can be `IN_DOUBT`.
-5. Every retry of an archive, admission or delivery uses the original, Ticket, Signed, receiver and attachments stored when the Ticket was issued or the result archived. The service MUST fix at Ticket issuance the attachments it will deliver with the message and the business objects the message refers to (for example the credential and the grant it admits).
+5. Every retry of an archive, admission or delivery uses the original, Ticket, Signed, receiver and attachments stored when the Ticket was issued or the result archived. The service MUST fix at Ticket issuance the attachments it will deliver with the message and the business objects the message refers to (for example the credential and the grant it admits). For a coordination `exn` issued under `group-ticket-pair` (§7.21), the indexed member signature it carries is fixed when the service archives that member signature.
 
 ### 9.3 Ticket Issuance
 
@@ -578,6 +593,7 @@ The service MUST meet VCAP §12.8 and VAF §5.3 and §8.2. In addition:
 3. It MUST record, for each Ticket decision, the rule that decided it, and for a reviewed request the reviewer. A reviewer MUST NOT be the principal that made the request.
 4. When a review approves a request (code 12), the service signs the Ticket at that time and returns it on the next identical request. Before returning a stored Ticket it rechecks only facts that can revoke it: the principal's authority, the device's reset epoch, the AID, the status of each credential involved, and the message age of §9.5 item 5. If one fails, it does not return the Ticket and answers with code 3 or 4. The approval does not otherwise expire while its Ticket is unused within the window of item 2. The state basis of such a Ticket is the one retained with the request (§5.2) or, if newer, the service's archived head and counter; if the slot has signed since, the authenticator rejects the Ticket (`TICKET_INVALID`) without a signature, and the platform repeats the identical request to obtain a reissued Ticket (§7.5).
 5. Decisions are append-only. A later decision about the same original or signed message adds a record that names the one it supersedes; it never overwrites an earlier one, and a Ticket stays bound to the decision under which it was issued.
+6. It MUST issue a linked Ticket (VCAP §9.2) only under `group-ticket-pair` (§7.21): only of kind 4, only for the coordination `exn` that embeds the original of the member signature decided with it, for the same slot, with `signCounter` one above that signature's Ticket and `linkedDigest` equal to that original's digest. It records the two Tickets as one decision. It MUST NOT link any other Ticket.
 
 ### 9.4 Archive
 
@@ -642,6 +658,7 @@ No event removes an archived result, and no event rolls back a delivery that has
 5. **Receiver echo** (§7.9) prevents a compromised platform from redirecting delivery without detection, but the enterprise remains responsible for choosing receivers.
 6. **Unconditional archiving** (§9.4) lets a platform store a signature after the enterprise has withdrawn its consent. This creates no effect outside the enterprise: the signature exists already, and dispatch admission (§9.5) still decides whether it is sent. Refusing to archive would only leave an unaudited signature on the platform.
 7. **Delayed dispatch.** A signature dispatched long after it was made may no longer reflect the signer's current intent. The maximum message age (§9.5 item 5), the recheck of revoking facts, and recipients' own checks of `dt` (VAF §5.3) bound this.
+8. **Linked Tickets** (§7.21) let one touch or tap produce a member signature and its coordination `exn`. The coordination message changes no key state and only carries the member signature to the other members; the service links only that message, decided together with the signature (§9.3 item 6), so a compromised platform cannot use the shared user action for any other content.
 
 ---
 
@@ -672,6 +689,7 @@ No event removes an archived result, and no event rolls back a delivery that has
 | group-original | conditionally required (purposes 7, 13–15) | 5 groupAid, 6 said, 7 originalDigest | [original, Signed?] |
 | group-status | conditionally required (purposes 7, 13–15) | 5 groupAid, 6 said, 7 originalDigest | [state, thresholdMet, networkAccepted, replacementSaid?] |
 | config-update | required | 5 StateProof? | trustConfig / null |
+| group-ticket-pair | conditionally required (purposes 7, 13–17) | 5 StateProof?, 6 purpose, 7 original, 8 coordination | [Ticket, receiver?, linkedTicket, coordinationReceiver] |
 
 ## Appendix B Purpose Registry
 
@@ -810,3 +828,4 @@ This document follows these rules from the Candidate onward:
 **Change log.**
 
 - **14 November 2026.** Candidate Specification; first published version.
+- **15 November 2026.** Revision of the Candidate: new operation `group-ticket-pair` (§7.21, §9.3 item 6, Appendix A) issues a member signature's Ticket together with a linked Ticket for its coordination `exn` (VCAP §9.2); purpose 6 accepts such an `exn` before the member signature is archived (§7.5, §9.2 item 5); configuration updates may be looked up before the authenticator is connected and confirmed in the next context (§8.7); recovery table entries for `UP_REQUIRED` and for `TICKET_INVALID`, which now keeps the context (§8.3); NFC needs one tap per signature (§4.2, §8.6).
