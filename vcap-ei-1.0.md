@@ -18,7 +18,7 @@
 
 ## Status of this document
 
-This is a **Candidate Specification** of VCAP-EI 1.0, dated 15 November 2026. Its features are frozen: until it becomes final it changes only to correct errors, remove ambiguity, or resolve findings of the review below, and every such change is listed in the change log. It becomes the final 1.0 when (1) at least one Enterprise Service and one Platform, written independently of each other's code, pass the VAF conformance tests including VAF BASE-T15–T20 on real authenticators; (2) an implementation written only from these documents reproduces the test vectors of VCAP Appendix E and completes a signature and its archiving; and (3) an independent security review of VCAP, VCAP-EI and VAF has been completed and its findings resolved. Comments and errata are submitted as issues at <https://github.com/vlei-auth/vcap-ei/issues>.
+This is a **Candidate Specification** of VCAP-EI 1.0, dated 16 November 2026. Its features are frozen: until it becomes final it changes only to correct errors, remove ambiguity, or resolve findings of the review below, and every such change is listed in the change log. It becomes the final 1.0 when (1) at least one Enterprise Service and one Platform, written independently of each other's code, pass the VAF conformance tests including VAF BASE-T15–T20 on real authenticators; (2) an implementation written only from these documents reproduces the test vectors of VCAP Appendix E and completes a signature and its archiving; and (3) an independent security review of VCAP, VCAP-EI and VAF has been completed and its findings resolved. Comments and errata are submitted as issues at <https://github.com/vlei-auth/vcap-ei/issues>.
 
 ## License and Intellectual Property
 
@@ -190,11 +190,11 @@ missing = [+ ("oobi" / "endpoint-auth" / "schema" / "credential-chain" / "tel" /
 | 8 | 409 | An operation for this request, or one that must finish before it (§9.7), is in progress, held or in doubt | Stop and reconcile (§8.3); never obtain a new signature to get past it |
 | 9 | 409 | Conflicts with a stored request (different original, challenge reuse) | Reconcile (§8.3) |
 | 10 | 429 / 5xx | Temporary failure | Repeat the same request |
-| 11 | 409 | The request needs group coordination first: a WORK rotation that would leave the slot outside a group's next-key commitment (VCAP §12.8 item 7.7) | Complete the pending group rotation, then repeat |
+| 11 | 409 | The request needs group coordination first: a WORK rotation that would leave the slot outside a group's next-key commitment (VCAP §12.8 item 7.7). Never returned for a group retired under VAF §6.6 | Complete the pending group rotation, then repeat |
 | 12 | 202 | The request is retained and awaits an enterprise review | Repeat the same request after `Retry-After` |
 | 13 | 409 | Material needed to validate or deliver the message is missing (§7.18) | Show `missing`; supply it or wait, then repeat the same request |
 
-Only `kel-ticket`, `kel-ticket-retry`, `message-ticket` and `group-ticket` return code 12. While the review is pending, a repeated request with identical bytes returns code 12 with the same `reviewId`; after approval it returns the Ticket; after rejection it returns code 3. The service retains the request from the first code 12 response, so the review covers exactly those bytes; a request with different bytes is a new request, and so is a request with identical bytes after the user withdrew the review (§7.19). The service signs the Ticket when the review approves the request (§9.3 item 4), so the platform can wait for the review without the authenticator.
+Only `kel-ticket`, `kel-ticket-retry`, `message-ticket`, `group-ticket` and `group-ticket-pair` return code 12. While the review is pending, a repeated request with identical bytes returns code 12 with the same `reviewId`; after approval it returns the Ticket; after rejection it returns code 3. The service retains the request from the first code 12 response, so the review covers exactly those bytes; a request with different bytes is a new request, and so is a request with identical bytes after the user withdrew the review (§7.19). The service signs the Ticket when the review approves the request (§9.3 item 4), so the platform can wait for the review without the authenticator.
 
 `gateway-submit` and `kel-archive` never return a 4xx status because an approval, a review or a Ticket window has expired: a verifiable result is archived and its dispatch is reported as an operation state (§6.3).
 
@@ -395,7 +395,7 @@ Returns the material the platform needs to approve Agent delegation (VCAP §12.5
 
 ### 7.13 `aid-status` (required), `reset-reason` and `reset-report` (optional)
 
-- `aid-status`: scope + `5: aid_t44` → `active_bool`. Lets a platform stop using an AID the enterprise has deactivated (VCAP §12.7, VAF §6.5 item 3).
+- `aid-status`: scope + `5: aid_t44` → `active_bool`. Lets a platform stop using an AID the enterprise has deactivated (VCAP §12.7, VAF §6.5 item 3). `aid` may also be a group AID the service records; it is inactive once the service has recorded a retirement determination for it (VAF §6.6).
 - `reset-reason`: scope → `[state_tstr, reason_bstr] / null`. Tells the platform why the enterprise requires a Reset, if it does.
 - `reset-report`: `{1:device_b32, 2:bindingProof}` (no scope) → `[state_tstr, resetEpoch / null]`, where `state` is `"recorded"` (a Reset was recorded now), `"known"` (the Reset was already on record), `"pending-enrollment"` (recorded, and IT has not yet enrolled the device again) or `"none"` (the BindingProof shows the binding on record, so it shows no Reset); `resetEpoch` is the epoch the BindingProof reports, or null when it shows STOCK_UNBOUND. Reports a Reset per §8.5. A BindingProof that does not verify under the attestation key of a device this enterprise enrolled is `403`. A BindingProof with this enterprise's tenant and root and an epoch lower than the record is `409`, because an epoch never decreases. The service MUST be idempotent per (device, recorded resetEpoch), the epoch whose end the report records.
 
@@ -408,24 +408,28 @@ Returns the archived original of a non-KEL message and, if archived, its device 
 
 ---
 
-### 7.15 `group-ticket` (conditionally required: if the service offers purposes 7 or 13–15)
+### 7.15 `group-ticket` (conditionally required: if the service offers purposes 7, 13–15 or 18)
 
 Requests a Ticket for a member signature on a group AID event (VCAP kinds 6 and 7, VCAP §12.9).
 
 - **Request:** scope + `5: StateProof / null`, `6: purpose`, `7: original_bstr`.
 - **Result:** `Ticket_bstr`.
-- `purpose` is 13, 14 or 15 (kind GROUP) or 7 (kind GROUP_SUPERSEDE), and the original is a group `icp`, `ixn` or `rot` respectively (for purpose 7, `ixn` or `rot`, or `icp` to reuse the record of an abandoned inception, VCAP §8.4.4 item 6).
+- `purpose` is 13, 14 or 15 (kind GROUP) or 7 (kind GROUP_SUPERSEDE), and the original is a group `icp`, `ixn` or `rot` respectively (for purpose 7, `ixn` or `rot`, or `icp` to reuse the record of an abandoned inception, VCAP §8.4.4 item 6); or `purpose` is 18 (kind GROUP_RELEASE) and the original is the 63-byte release message for a group AID (VCAP §8.5.4).
+- For purpose 18, key 5 MUST be a StateProof carrying the slot's record for the group AID (null key 5: `409`, code 7). The service issues the Ticket only per VCAP §12.8 item 7.8: the slot no longer takes part in the group, the signature the record holds is archived (§7.16), and the role key holds capability bit 16. A retired group (VAF §6.6) does not refuse purpose 18. It returns code 3 with `rule` `"group-active-member"` when the slot still takes part in the group and no recorded enterprise decision ends its participation.
 - A StateProof in key 5 MUST have been obtained with a challenge from §7.2 and with the event's `i` as group AID (VCAP §7.4.2), so that it carries the slot's group record. A null key 5 selects the service's archived group record for the slot and its own record of the group's accepted key state. For purpose 7, and for any request at a (group AID, `s`) the service has recorded as abandoned, key 5 MUST be present, because only the device knows for certain whether its record holds the abandoned event; with a null key 5 the service returns `409` with error code 7. A member whose group record holds an event other than the one the group's witnesses accepted at the same sequence number signs the accepted event under purpose 7 (VCAP §12.8 items 7.2 and 7.5(a)), with key 5 present; the service approves it only when the record's `seq` equals that sequence number and the original is byte for byte the accepted event.
 - The service MUST perform VCAP §12.8 item 7 in full before signing. In particular it approves at most one original per (group AID, `s`) across all members it serves, and for purpose 7 it signs only under a role key that holds capability bit 13 and only after recording a determination on the grounds of VCAP §12.8 item 7.5.
+- **Recoverability.** For a group `icp` or `rot` the service determines, from the members' accepted key states, whether the event is recoverable, rotation-recoverable or unrecoverable (VAF §3.6). For an event that is not at least rotation-recoverable it either returns code 12 and decides by review, recording the accepted risk with the approval, or refuses by rule with code 3 and `rule` `"group-recoverability"`. It makes this decision once per (group AID, `s`, original), so that every member it serves receives the same one.
+- **Retired group.** For a group AID with a retirement determination (VAF §6.6) the service refuses every purpose except 18 with code 3 and `rule` `"group-retired"`; so do `message-ticket` for purposes 6, 16 and 17 (§7.5) and `group-ticket-pair` (§7.21) for that group.
 - **Idempotency:** a repeated request with identical bytes returns the same Ticket. A different original for a (group AID, `s`) that already has an approved original returns `409` with error code 9, except for one replacement (VCAP §12.8 items 7.3 and 7.5): once the service has recorded that the approved original was abandoned, the first different original it approves for that (group AID, `s`) becomes the approved original for every member it serves. A member whose group record holds the abandoned event requests it under purpose 7; any other member, including when no member signed the abandoned event, requests it under purpose 14 or 15. Any further different original for that (group AID, `s`) returns `409` with error code 9, and so does a second purpose 7 request for the same (scope, groupAid, `s`), matching the authenticator, which replaces at most once per sequence number (VCAP §8.4.4 item 6).
 
-### 7.16 `group-archive` (conditionally required: if the service offers purposes 7 or 13–15)
+### 7.16 `group-archive` (conditionally required: if the service offers purposes 7, 13–15 or 18)
 
 Archives the device result of a member signature on a group event.
 
 - **Request:** scope + `5: groupAid_t44`, `6: sequence`, `7: Signed`.
 - **Result:** `null`.
 - The service MUST verify `Signed` against the archived original and the slot's current key, check that `signCounter` matches an issued Ticket, and store the signature and update its copy of the slot's group record in one transaction. The service does not itself deliver the signature to the other members; the platform does so with the coordination `exn` below.
+- For a release (purpose 18), `sequence` is the `seq` of the record being released; the service verifies the Signed against the release message it stored with the Ticket and, in the same transaction, marks its copy of the slot's record as released.
 - The archive entry is keyed by (scope, groupAid, sequence, `Signed.originalDigest`); the original it belongs to is the one whose Ticket carries that digest. A Signed for a (scope, groupAid, sequence) without an archived entry is archived. Otherwise the service processes a request as follows:
   1. The same Signed as an archived entry: success, with no further effect (retry).
   2. A different Signed with the same key as an archived entry: `400`. The authenticator never signs the same group event twice (VCAP §8.4.4 items 5–6).
@@ -433,10 +437,10 @@ Archives the device result of a member signature on a group event.
   4. Any other Signed for a (scope, groupAid, sequence) that already has an archived entry: `400`.
 - The coordination `exn` (`/multisig/icp`, `/multisig/ixn` or `/multisig/rot`) that carries the signature to the other members is a separate signature under purpose 6 (§7.5), delivered with `gateway-submit`.
 
-### 7.17 `group-original` and `group-status` (conditionally required: if the service offers purposes 7 or 13–15)
+### 7.17 `group-original` and `group-status` (conditionally required: if the service offers purposes 7, 13–15 or 18)
 
 - `group-original`: scope + `5: groupAid_t44`, `6: said_t44`, `7: originalDigest_b32` → `[original_bstr, Signed_bstr / null]`; `404` if not retained.
-- `group-status`: as `group-original` → `[state_tstr, thresholdMet_bool, networkAccepted_bool, replacementSaid_t44 / null]`. `state` is `"pending"`, `"threshold-met"`, `"accepted"` or `"abandoned"`. `thresholdMet` is true once the service holds member signatures that satisfy the event's current threshold and, for `rot`, the prior next threshold. `networkAccepted` follows §7.8. `"abandoned"` means the service has recorded a determination under VCAP §12.8 item 7.5 for this event; `replacementSaid` is then the SAID of the approved replacement once one is agreed, and null before.
+- `group-status`: as `group-original` → `[state_tstr, thresholdMet_bool, networkAccepted_bool, replacementSaid_t44 / null]`. `state` is `"pending"`, `"threshold-met"`, `"accepted"`, `"abandoned"` or `"retired"`. `thresholdMet` is true once the service holds member signatures that satisfy the event's current threshold and, for `rot`, the prior next threshold. `networkAccepted` follows §7.8. `"abandoned"` means the service has recorded a determination under VCAP §12.8 item 7.5 for this event; `replacementSaid` is then the SAID of the approved replacement once one is agreed, and null before. `"retired"` means the service has recorded a retirement determination for the group (VAF §6.6) and the event was not accepted; the service issues no further Ticket for the group.
 
 ### 7.18 `message-prepare` (required for purposes 8–10 if offered; optional otherwise)
 
@@ -485,6 +489,17 @@ Requests, in one decision, the Ticket for a member signature and a linked Ticket
 - **Archiving** is as without a pair: `group-archive` (§7.16), or `gateway-submit` (§7.9) for purposes 16 and 17, for the member signature, then `gateway-submit` with purpose 6 for the coordination `exn`. The service accepts the coordination `exn` only after the member signature it embeds is archived.
 - A linked Ticket is also an ordinary Ticket: when the member signature was made in an earlier context, for example because the response was lost, the platform signs the coordination `exn` later, with its own user action.
 - **Platform.** The platform requests a pair only from an authenticator that implements group member signing (GetInfo `vcapGroup`). It sends the Sign (or upload) of `original` and then that of `coordination` in one context, with no command between them other than GetInfo and status-mode GetState. If the second returns `UP_REQUIRED` (VCAP §10.1), the member signature exists and the platform asks the user for a new tap and signs the coordination `exn` in a new context.
+
+### 7.22 `group-health` (optional)
+
+Reports which members of a group are active and whether the group can still sign and rotate, so that a platform can tell the user why a group event cannot complete and need not wait for signatures that will not come (VAF §3.6, §6.5 item 7, §6.6).
+
+- **Request:** scope + `5: groupAid_t44`.
+- **Result:** `[state_tstr, members, canSign_bool, canRotate_bool, recoverability_tstr]`, with `members = [* [aid_t44, signing_bool, rotation_bool, active_bool]]`.
+- `members` lists each member AID of the group's latest accepted establishment event as the service knows it: `signing` when the member has a key in `k`, `rotation` when it has a commitment in `n`. `active` is false for an AID the service has retired (VAF §6.5 item 3), and for an AID it does not serve, false once the service has been informed of its loss (VAF §6.5 item 7).
+- `state` is `"active"` or `"retired"` (VAF §6.6). `canSign` and `canRotate` are true when the active members satisfy `kt` and `nt` of that event; `recoverability` is `"recoverable"`, `"rotation-recoverable"` or `"unrecoverable"` for the active members (VAF §3.6).
+- The service returns `403` unless the slot's WORK AID is a member of the group in its accepted key state or the service holds a group record of the slot for it.
+- The result informs the user. It is not evidence of KERI acceptance, and the service applies its own checks to every Ticket request.
 
 ## 8. Procedures
 
@@ -555,6 +570,8 @@ The platform MUST NOT guess or increment a reset epoch itself.
 5. Read `group-status` until `thresholdMet` and `networkAccepted`; the platform reports these stages separately from "member signed".
 6. If `group-status` reports `"abandoned"` with a `replacementSaid`, obtain the replacement's bytes and repeat steps 3–4 for it, with purpose 7 and a StateProof carrying the group record when the slot's group record holds the abandoned event. A slot replaces at most once per sequence number (VCAP §8.4.4), so the service SHOULD have all members agree on a replacement's bytes before it issues the first replacement Ticket.
 7. To sign a message of the group, for example an IPEX `grant` of a credential the group issues or `/end/role/add` for the group AID: `message-ticket` (purpose 16 or 17) → Sign(GROUP_EXN or RPY) → `gateway-submit`; then send the signature to the other members in a `/multisig/exn` or `/multisig/rpy` `exn` under purpose 6 (steps 4–5).
+8. **Member loss.** When `group-health` (§7.22), `aid-status` or a notification under VAF §6.5 item 7 shows an inactive member, the platform stops waiting for that member's signature. If the active members can rotate (`canRotate`), a remaining member builds a group `rot` that removes the inactive member's key and commitment and, where the enterprise names a successor AID, adds it; the members sign it under steps 2–5, and a joining member signs under purpose 15. Otherwise the platform reports that the group can no longer rotate and offers no further group operation for it; after a retirement determination (VAF §6.6) `group-status` reports `"retired"` and Tickets for the group are refused with code 3.
+9. **Release.** When the slot no longer takes part in a group (the group is retired, the slot was rotated out, or the employee left it) and the authenticator needs the record for another group, or the enterprise offers it: `challenge` → GetState with the group AID → `group-ticket` (purpose 18) → Sign(GROUP_RELEASE) → `group-archive`. One user action. The record becomes a tombstone and frees one of the authenticator's group records (VCAP §8.5.4); the slot never signs for that group AID again, so the platform asks the user to confirm the group's name and AID first.
 
 Over USB, steps 3 and 4 run in one context: one PIN entry and two touches. Over NFC they need two taps and two contexts (VCAP §11.3); the platform MAY hold the PIN for both (VCAP §12.1 item 8). With `group-ticket-pair` (§7.21) the platform builds the coordination `exn` of step 4 before step 3, obtains both Tickets with one request, and signs both in one context with one touch or tap, followed by `group-archive` and `gateway-submit`; the same applies to the group message and its `/multisig/exn` or `/multisig/rpy` of step 7. Lost responses are reconciled per §8.3, using `group-original` and a StateProof requested with the group AID in place of `kel-original` and a plain StateProof.
 
@@ -644,6 +661,7 @@ The authenticator still accepts an unused Ticket until the slot's counter advanc
 | Credential involved revoked | Accepted | Refused; queued operations `CANCELLED` (`credential-revoked`) | Reconciled only; the order of revocation and delivery is recorded | Unaffected |
 | Approval withdrawn | Unaffected | Queued operations `HELD` (`review-required`) | Reconciled only | Unaffected |
 | TrustConfig update (VCAP §12.10) | Accepted for every configuration of the chain (§6.1) | Unaffected | Unaffected | Unaffected |
+| Group retirement (VAF §6.6) | Accepted | Refused for the group; its queued messages and coordination messages `CANCELLED` (`aid-retired`) | Reconciled only | Unaffected |
 
 No event removes an archived result, and no event rolls back a delivery that has started.
 
@@ -690,6 +708,7 @@ No event removes an archived result, and no event rolls back a delivery that has
 | group-status | conditionally required (purposes 7, 13–15) | 5 groupAid, 6 said, 7 originalDigest | [state, thresholdMet, networkAccepted, replacementSaid?] |
 | config-update | required | 5 StateProof? | trustConfig / null |
 | group-ticket-pair | conditionally required (purposes 7, 13–17) | 5 StateProof?, 6 purpose, 7 original, 8 coordination | [Ticket, receiver?, linkedTicket, coordinationReceiver] |
+| group-health | optional | 5 groupAid | [state, members, canSign, canRotate, recoverability] |
 
 ## Appendix B Purpose Registry
 
@@ -712,12 +731,13 @@ No event removes an archived result, and no event rolls back a delivery that has
 | 15 | Group rotation (member signature on a group `rot`) | WORK | GROUP | 13 |
 | 16 | Group message (member signature on an `exn` of a group AID, for example an IPEX `grant`, §8.6 step 7) | WORK | GROUP_EXN | 15 |
 | 17 | Group reply (member signature on an `rpy` of a group AID, for example `/end/role/add`, §8.6 step 7) | WORK | RPY | 12 |
+| 18 | Group record release (the slot no longer takes part in the group, §8.6 step 9) | WORK | GROUP_RELEASE | 16 |
 
 Ranges:
 
 | Range | Use |
 |---|---|
-| 1..127 | 1–17 are assigned by this document; 18–127 are reserved. Purposes 6, 7 and 13–17 serve group AIDs; 7 and 13–16 need an authenticator with group member signing for kinds 6, 7 and 8 (VCAP §2.1) |
+| 1..127 | 1–18 are assigned by this document; 19–127 are reserved. Purposes 6, 7 and 13–18 serve group AIDs; 7, 13–16 and 18 need an authenticator with group member signing for kinds 6 to 9 (VCAP §2.1) |
 | 128..65535 | Enterprise-defined. An enterprise MUST map each such value to exactly one (owner, kind) pair of VCAP Appendix B, and a platform MUST NOT assume interoperability for them |
 
 A purpose determines the capability bit the service checks and the role key it selects (§9.3 item 1); it is not sent to the authenticator. The route, recipients and embedded material of an EXN are checked by the service against the purpose.
@@ -795,6 +815,8 @@ The requests of profile `"vaf"` (C.1), and in addition the following reads, whic
 | GET | `/identifiers/{name}/members` | — |
 | GET | `/states` | `pre`: a 44-character AID, repeated 1..16 times |
 
+The `rotation` members that `/identifiers/{name}/members` returns may include rotation-only members that are absent from `signing` (VAF §3.6).
+
 The profile adds no write. Group inception, joining, every group event and every group message need a member signature and a Ticket (§§ 7.5, 7.15); the enterprise service registers the group with the employee's Agent after `group-archive`.
 
 ## Appendix D References
@@ -829,3 +851,5 @@ This document follows these rules from the Candidate onward:
 
 - **14 November 2026.** Candidate Specification; first published version.
 - **15 November 2026.** Revision of the Candidate: new operation `group-ticket-pair` (§7.21, §9.3 item 6, Appendix A) issues a member signature's Ticket together with a linked Ticket for its coordination `exn` (VCAP §9.2); purpose 6 accepts such an `exn` before the member signature is archived (§7.5, §9.2 item 5); configuration updates may be looked up before the authenticator is connected and confirmed in the next context (§8.7); recovery table entries for `UP_REQUIRED` and for `TICKET_INVALID`, which now keeps the context (§8.3); NFC needs one tap per signature (§4.2, §8.6).
+- **16 November 2026.** Revision of the Candidate, resolving a review finding on the loss of a group member's authenticator: recoverability decision for group `icp` and `rot`, with code 12 or code 3 `group-recoverability`, and refusal of a retired group with code 3 `group-retired` (§7.15); `aid-status` for group AIDs and `group-status` state `"retired"` (§§ 7.13, 7.17); new optional operation `group-health` (§7.22, Appendix A); procedure on the loss of a member (§8.6 step 8); lifecycle event for a group retirement (§9.7); code 11 is not returned for a retired group (§5.2); rotation-only members in profile `"vaf-group"` (Appendix C.3). Erratum: §5.2 omitted `group-ticket-pair` among the operations that return code 12, which §7.21 already specified.
+- **16 November 2026 (second revision).** New purpose 18, group record release, with kind GROUP_RELEASE and capability bit 16 (§§ 7.15, 7.16, 8.6 step 9, Appendix B); a retired group still accepts purpose 18 (§7.15).
