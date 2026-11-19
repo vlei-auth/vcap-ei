@@ -1,6 +1,6 @@
 # VCAP Enterprise Interface (VCAP-EI) 1.0
 
-*Candidate Specification — 17 November 2026*
+*Candidate Specification — 19 November 2026*
 
 **Specification identifier:** VCAP-EI-1.0  
 **URL:** https://vlei-auth.github.io/vcap-ei/  
@@ -18,7 +18,7 @@
 
 ## Status of this document
 
-This is a **Candidate Specification** of VCAP-EI 1.0, dated 17 November 2026. Its features are frozen: until it becomes final it changes only to correct errors, remove ambiguity, or resolve findings of the review below, and every such change is listed in the change log. It becomes the final 1.0 when (1) at least one Enterprise Service and one Platform, written independently of each other's code, pass the VAF conformance tests including VAF BASE-T15–T20 on real authenticators; (2) an implementation written only from these documents reproduces the test vectors of VCAP Appendix E and completes a signature and its archiving; and (3) an independent security review of VCAP, VCAP-EI and VAF has been completed and its findings resolved. Comments and errata are submitted as issues at <https://github.com/vlei-auth/vcap-ei/issues>.
+This is a **Candidate Specification** of VCAP-EI 1.0, dated 19 November 2026. Its features are frozen: until it becomes final it changes only to correct errors, remove ambiguity, or resolve findings of the review below, and every such change is listed in the change log. It becomes the final 1.0 when (1) at least one Enterprise Service and one Platform, written independently of each other's code, pass the VAF conformance tests including VAF BASE-T15–T20 on real authenticators; (2) an implementation written only from these documents reproduces the test vectors of VCAP Appendix E and completes a signature and its archiving; and (3) an independent security review of VCAP, VCAP-EI and VAF has been completed and its findings resolved. Comments and errata are submitted as issues at <https://github.com/vlei-auth/vcap-ei/issues>.
 
 ## License and Intellectual Property
 
@@ -821,6 +821,100 @@ The `rotation` members that `/identifiers/{name}/members` returns may include ro
 
 The profile adds no write. Group inception, joining, every group event and every group message need a member signature and a Ticket (§§ 7.5, 7.15); the enterprise service registers the group with the employee's Agent after `group-archive`.
 
+### C.4 Profile `"vaf-credential-view"`
+
+An independent read-only profile for bounded views of credentials saved by the
+selected Agent. It does not inherit the requests or writes of `vaf` or
+`vaf-group`. Every request remains subject to §7.11 authority checks before
+execution and before disclosure. Reads MUST NOT carry a `requestId` or require
+an authenticator. Producing a temporary material snapshot is a read: it neither
+signs, imports nor sends a credential or exchange.
+
+Path `said` is an `E` SAID of 44 ASCII characters. `ref` is a server-generated
+32-character lowercase hexadecimal reference. No caller-supplied URL, file path,
+controller selection or headers are accepted. Query parameters are permitted
+only for the content route; each MUST occur exactly once. POST bodies are UTF-8
+JSON objects of at most 8192 bytes with unique keys and exactly the listed fields.
+
+| Method | Path | Request |
+| --- | --- | --- |
+| GET | `/credential-view/info` | no body or query |
+| POST | `/credential-view/query` | `{filter, cursor, limit}` |
+| GET | `/credential-view/{said}` | no body or query |
+| POST | `/credential-view/{said}/graph` | `{cursor, limit}` |
+| POST | `/credential-view/{said}/material` | `{format}`; format is `json`, `schema`, or `cesr` |
+| GET | `/credential-view/content/{ref}` | `offset`: 0..4194304; `length`: 1..32768; canonical decimal integers |
+
+`cursor` is null or a nonempty opaque string of at most 256 ASCII characters;
+`limit` is an integer 1..100. Implementations MAY return fewer records to meet
+the byte budget. A page returns `items`, `nextCursor` (null at completion),
+`snapshot`, and `total` for that snapshot. A short page with a non-null cursor
+MUST NOT be treated as the last page. Snapshot ordering is stable with a SAID
+tiebreaker. Cursors MUST be bound to the authenticated principal, device epoch,
+slot, CLIENT/Agent, trusted identity context and exact filter/root. Expired or
+invalid cursors MUST NOT be reused for a different snapshot.
+
+`filter` has no keys except `category`, `schema`, `subject`, `search`, `status`.
+Category defaults to `mine`, and is one of `mine`, `group`, `history`,
+`supporting`, `other`, `all`, `presentable`. Schema and subject, when present,
+are 44-character E identifiers. Search is at most 256 UTF-8 bytes and applies to
+the saved catalog before pagination, not merely the loaded page. Status is
+`issued`, `revoked`, or `unknown`. Missing fresh evidence MUST NOT be represented
+as currently valid. Optional category counts refer to the queried snapshot/search.
+
+A summary is explicitly marked `summary:true`. Its partial `sad` contains only
+identifiers and optional disclosed subject; it is NOT an ACDC and MUST NOT be
+signed or used as credential material. Schema contains only a bounded title;
+`preview` contains explicitly shortened display fields. `category`,
+`presentable`, `dependencies` and `status` are projections. Status reports known
+`et`, `checkedAt`, `validUntil` and `fresh`; it is neither proof of acceptance nor
+a replacement for business validation. The full original credential remains
+available through material reads. `mine` derives from archived active hardware
+WORKs; groups additionally require accepted membership and current enterprise
+authority. Historical subjects and unknown/undisclosed subjects remain discoverable.
+Being referenced MUST NOT hide an otherwise owned credential.
+
+The detail entry returns a summary and a JSON material descriptor. The JSON
+document includes the unchanged ACDC `sad`, its schema, independently disclosed
+`attributes` when available, status, category, presentation eligibility and
+bounded `referencedBy` information. A graph page returns unique node summaries,
+actual labelled edges, `root`, and explicit `missing`, `limited`, and `cycle`
+indicators. Missing or out-of-range graph material MUST NOT be silently treated
+as a complete proof. Presentation still requires the existing full policy checks.
+
+A material descriptor contains `ref`, `length`, `sha256` (lowercase hex of the
+exact blob bytes), `mediaType`, `expiresAt` (UTC milliseconds) and `chunkSize`.
+Version 1 uses 32768-byte chunks and supports blobs up to 4194304 bytes. A
+reference is bound to the caller's authorized root credential, material format,
+immutable byte snapshot and scope; every block MUST recheck current authority.
+Content responses use `application/octet-stream` in the existing Agent response
+wrapper. The final block may be shorter than the requested length; it MUST
+contain exactly the remaining bytes. The client MUST check offsets, total length
+and blob digest before interpreting JSON or CESR. A transport digest does not
+replace ACDC SAID or KERI/TEL/KEL proof verification.
+
+`json` returns one credential and schema without recursive chain expansion;
+`schema` returns its full original schema; `cesr` returns the owned root and its
+supporting material with original event bytes and attachments. The implementation
+MUST bound graph traversal, output size, CPU work, cache lifetime and per-scope
+resource use. Detached blocks MUST NOT be substituted into the signed ACDC.
+A large export being readable does not increase any signing/message size limit.
+
+All responses retain §7.11's **65536-byte total encoded limit**. Larger content
+MUST be transferred with explicit bounded pages/blocks, never by dropping proof
+bytes or raising the global limit. Errors are bounded JSON `{error: code}`:
+403 for scope or presentation ownership, 404 for unavailable saved material,
+409 for invalid, filter-mismatched or catalog-stale cursor, 410 for expired snapshots, 413 for
+resource/material limits, 416 for invalid byte range, 422 for incomplete or
+unsupported graph/material. Authorization failures MUST NOT cause an implicit
+fallback to another profile. `info` version 1 declares `responseLimit:65536`,
+`chunkSize:32768`, `materialLimit:4194304` and supported `formats`.
+
+Deployment configuration MAY explicitly select this profile and version for a
+trusted enterprise origin. An absent declaration selects legacy behavior; a
+declared but unavailable/mismatched profile is a deployment error. This selection
+grants no additional identity authority and requires no TrustConfig/Key update.
+
 ## Appendix D References
 
 ### D.1 Normative References
@@ -856,3 +950,4 @@ This document follows these rules from the Candidate onward:
 - **16 November 2026.** Revision of the Candidate, resolving a review finding on the loss of a group member's authenticator: recoverability decision for group `icp` and `rot`, with code 12 or code 3 `group-recoverability`, and refusal of a retired group with code 3 `group-retired` (§7.15); `aid-status` for group AIDs and `group-status` state `"retired"` (§§ 7.13, 7.17); new optional operation `group-health` (§7.22, Appendix A); procedure on the loss of a member (§8.6 step 8); lifecycle event for a group retirement (§9.7); code 11 is not returned for a retired group (§5.2); rotation-only members in profile `"vaf-group"` (Appendix C.3). Erratum: §5.2 omitted `group-ticket-pair` among the operations that return code 12, which §7.21 already specified.
 - **16 November 2026 (second revision).** New purpose 18, group record release, with kind GROUP_RELEASE and capability bit 16 (§§ 7.15, 7.16, 8.6 step 9, Appendix B); a retired group still accepts purpose 18 (§7.15).
 - **17 November 2026.** Revision of the Candidate, resolving review findings on the loss procedures: `aid-status` answers only for the slot's own AIDs and for group AIDs, and other members' status is read through `group-health` (§§ 7.13, 8.6 step 8); `group-health` covers an approved `icp` before acceptance, reports an unknown member status as null; new optional operation `migration-status` reports an open migration window (§7.22, Appendix A); `reset-report` state `"retired"` for a retired epoch without Reset, answered on the BindingProof alone (§7.13); the migration of VAF §6.7 in the member-loss procedure (§8.6 step 8); code 11 applies to every slot that takes part in a group, with or without a group record (§§ 7.3, 8.4).
+- **19 November 2026.** Resolve oversized expanded credential reads with the independent read-only `vaf-credential-view` profile (Appendix C.4): bounded summaries and cursors, trusted ownership, graph traversal, immutable chunked material, freshness and explicit version selection. The existing `vaf` and `vaf-group` contracts and total response/signing limits are unchanged.
